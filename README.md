@@ -6,9 +6,10 @@ bytes were observed, and lets you retro-hunt the retained bytes with YARA-X
 rules that did not exist when the artifacts were collected.
 
 This repository is the **Milestone 0 "corpus proof"** from the engineering
-spec: CLI/manual ingestion, tenant-scoped CAS, fast classification, YARA-X
-scanning, a rule registry with immutable bundles, single-node retro-hunts,
-and a basic blast-radius JSON report. There is no endpoint agent yet.
+spec: CLI/manual ingestion, multi-tenant content-addressed store, fast
+classification, YARA-X scanning, a rule registry with immutable bundles,
+single-node retro-hunts, and a basic blast-radius JSON report. There is no
+endpoint agent yet.
 
 > Dev-profile warning (spec 8.4): the Docker Compose setup and filesystem CAS
 > are for development. They are not a safe production trust boundary for
@@ -18,10 +19,11 @@ and a basic blast-radius JSON report. There is no endpoint agent yet.
 
 - `crates/corpus-core` — shared library: types, DTOs, migrations runner,
   magic-byte classification, filesystem CAS, ingest (announce/finalize),
-  rule registry, bundle digests, hunt engine, blast-radius reporter.
+  tenant registry, rule registry, bundle digests, hunt engine,
+  blast-radius reporter.
 - `crates/corpus-server` — axum REST API (`/api/v1`), owns all writes.
-- `crates/corpusctl` — thin CLI client (`import`, `rules`, `bundles`,
-  `hunts`, `report`).
+- `crates/corpusctl` — thin CLI client (`tenants`, `import`, `rules`,
+  `bundles`, `hunts`, `report`).
 - `migrations/` — SQL migrations (applied by the server at boot).
 - `scripts/demo.sh` — full end-to-end demo.
 - `scripts/gen-testdata.sh` — builds demo fixtures (nothing binary is committed).
@@ -39,12 +41,14 @@ In another terminal:
 
 ```sh
 bash scripts/gen-testdata.sh testdata
-cargo run -p corpusctl -- import testdata
-cargo run -p corpusctl -- rules add testdata/corpus_demo_marker.yar
-cargo run -p corpusctl -- bundles publish --rule CorpusDemoMarker --activate
-cargo run -p corpusctl -- hunts create --bundle <digest-from-publish>
-cargo run -p corpusctl -- hunts run <hunt-id>
-cargo run -p corpusctl -- report blast-radius --hunt <hunt-id>
+# Optional: create a tenant (omit --tenant to use the seeded `default` tenant)
+cargo run -p corpusctl -- tenants create --slug acme --name "Acme Corp"
+cargo run -p corpusctl -- --tenant acme import testdata
+cargo run -p corpusctl -- --tenant acme rules add testdata/corpus_demo_marker.yar
+cargo run -p corpusctl -- --tenant acme bundles publish --rule CorpusDemoMarker --activate
+cargo run -p corpusctl -- --tenant acme hunts create --bundle <digest-from-publish>
+cargo run -p corpusctl -- --tenant acme hunts run <hunt-id>
+cargo run -p corpusctl -- --tenant acme report blast-radius --hunt <hunt-id>
 ```
 
 Or run the whole thing, including a real-database integration test:
@@ -67,7 +71,7 @@ Other `just` recipes: `just up`, `just down`, `just build`, `just test`,
 | `CORPUS_LISTEN` | `127.0.0.1:8080` | bind address |
 
 `corpusctl` (env / flags): `CORPUS_SERVER_URL` / `--server`,
-`CORPUS_TENANT` / `--tenant`.
+`CORPUS_TENANT` / `--tenant` (UUID or slug).
 
 ## Key behaviors (spec references)
 
@@ -83,8 +87,9 @@ Other `just` recipes: `just up`, `just down`, `just build`, `just test`,
   plus compiler configuration; re-publishing the same set returns the same
   digest.
 - **Retro-hunt** (15.1/15.2): a hunt pins `corpus_watermark` = max committed
-  artifact sequence at plan time and scans exactly that set. Timeouts or
-  unreadable artifacts force `COMPLETED_PARTIAL`.
+  artifact sequence at plan time and scans exactly that set. Re-runs keep
+  the original watermark (planned set is immutable). Timeouts or unreadable
+  artifacts force `COMPLETED_PARTIAL`.
 - **Scan cache** (15.4): keyed by `(tenant_id, artifact_sha256,
   rule_bundle_digest, yara_x_engine_version, scan_config_digest)`; re-running
   a hunt never rereads bytes and match commitment is idempotent.
@@ -98,9 +103,21 @@ Other `just` recipes: `just up`, `just down`, `just build`, `just test`,
 
 ## Tenancy
 
-M0 is single-tenant: requests without an `X-Corpus-Tenant` header use a
-fixed default tenant UUID. Every table carries `tenant_id` and every query
-is tenant-scoped, so multi-tenancy is a data-model given, not a feature.
+Multi-tenancy is a first-class feature:
+
+- `tenant` table with unique slug, display name, and `active`/`suspended`
+  status. Migration seeds a well-known default tenant
+  (`00000000-0000-0000-0000-000000000001`, slug `default`).
+- `X-Corpus-Tenant` accepts a **UUID or slug**. Missing header → `default`.
+  Unknown or suspended tenants are rejected (`404` / `403`).
+- Every data table carries `tenant_id` with a foreign key to `tenant`. All
+  queries are tenant-scoped. Dedup, occurrence uniqueness, scan cache, and
+  CAS object keys (`objects/{tenant_id}/{sha256}`) are per-tenant.
+- CLI: `corpusctl tenants create|list|get`, plus `--tenant` / `CORPUS_TENANT`
+  on every other command.
+
+AuthN/AuthZ beyond the tenant header (API keys, RBAC) is post-M0. The
+header is a trust boundary only inside a private network / local dev.
 
 ## Testing
 
@@ -111,10 +128,11 @@ CORPUS_TEST_DATABASE_URL=postgres://corpus:corpus@127.0.0.1:5433/corpus \
 ```
 
 Unit tests cover SHA-256 recompute/mismatch rejection, bundle digest
-determinism, magic-byte classification, cache-key correctness, and CAS
-create-if-absent. The integration test covers the full
-import → dedup → mismatch-rejection → bundle → hunt → re-run idempotency →
-forward coverage → blast-radius path.
+determinism, magic-byte classification, cache-key correctness, CAS
+create-if-absent, and tenant slug validation. The integration test covers
+the full import → dedup → mismatch-rejection → bundle → hunt → re-run
+idempotency (sticky watermark) → forward coverage → blast-radius path, plus
+cross-tenant isolation (no shared dedup, no cross-tenant hunt/rule reads).
 
 ## License
 

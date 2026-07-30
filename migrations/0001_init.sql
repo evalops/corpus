@@ -1,10 +1,31 @@
--- Milestone 0 schema: tenant-scoped CAS catalog, occurrence ledger,
+-- Milestone 0 schema: multi-tenant CAS catalog, occurrence ledger,
 -- rule registry, immutable bundles, hunts, matches, scan cache.
--- All tables carry tenant_id even though M0 is single-tenant.
+-- Tenants are first-class; every data table carries tenant_id and is
+-- queried only under an authenticated/resolved tenant scope.
+
+CREATE TABLE tenant (
+  id                  uuid PRIMARY KEY,
+  slug                text NOT NULL,
+  name                text NOT NULL,
+  status              text NOT NULL DEFAULT 'active',  -- active | suspended
+  created_at          timestamptz NOT NULL,
+  UNIQUE (slug),
+  CONSTRAINT tenant_slug_format CHECK (slug ~ '^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$')
+);
+
+-- Well-known default tenant (Uuid::from_u128(1)). Requests without an
+-- X-Corpus-Tenant header resolve here.
+INSERT INTO tenant (id, slug, name, status, created_at) VALUES (
+  '00000000-0000-0000-0000-000000000001',
+  'default',
+  'Default tenant',
+  'active',
+  TIMESTAMPTZ '2026-01-01 00:00:00+00'
+);
 
 CREATE TABLE artifact (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   seq                 BIGSERIAL NOT NULL,
   sha256              bytea NOT NULL,
   size_bytes          bigint NOT NULL CHECK (size_bytes >= 0),
@@ -19,7 +40,7 @@ CREATE INDEX idx_artifact_tenant_seq ON artifact (tenant_id, seq);
 -- Upload sessions allocated by announce (spec 11.2 two-phase commit).
 CREATE TABLE upload_session (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   announced_sha256    bytea NOT NULL,
   announced_size      bigint NOT NULL,
   staging_key         text NOT NULL,
@@ -29,7 +50,7 @@ CREATE TABLE upload_session (
 
 CREATE TABLE occurrence_event (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   host_name           text NOT NULL,
   agent_id            uuid NOT NULL,
   boot_id             uuid NOT NULL,
@@ -44,14 +65,15 @@ CREATE TABLE occurrence_event (
   file_size           bigint,
   file_mtime          timestamptz,
   process_evidence    jsonb,
-  UNIQUE (agent_id, boot_id, agent_sequence)
+  -- Tenant-scoped: the same agent identity may exist in multiple tenants.
+  UNIQUE (tenant_id, agent_id, boot_id, agent_sequence)
 );
 CREATE INDEX idx_occurrence_artifact ON occurrence_event (tenant_id, artifact_id);
 CREATE INDEX idx_occurrence_host ON occurrence_event (tenant_id, host_name);
 
 CREATE TABLE capture_attempt (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   host_name           text NOT NULL,
   agent_id            uuid NOT NULL,
   observed_at         timestamptz NOT NULL,
@@ -66,7 +88,7 @@ CREATE INDEX idx_capture_attempt_tenant ON capture_attempt (tenant_id);
 
 CREATE TABLE rule (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   namespace           text NOT NULL DEFAULT 'default',
   stable_id           text NOT NULL,
   source              text NOT NULL,
@@ -78,7 +100,7 @@ CREATE TABLE rule (
 
 CREATE TABLE rule_bundle (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   digest              text NOT NULL,
   scope               text NOT NULL DEFAULT 'tenant',
   engine_version      text NOT NULL,
@@ -96,7 +118,7 @@ CREATE TABLE rule_bundle_rule (
 
 CREATE TABLE hunt (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   kind                text NOT NULL,          -- retro | forward
   bundle_id           uuid NOT NULL REFERENCES rule_bundle (id),
   bundle_digest       text NOT NULL,
@@ -116,7 +138,7 @@ CREATE TABLE hunt (
 
 CREATE TABLE hunt_match (
   hunt_id             uuid NOT NULL REFERENCES hunt (id),
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   artifact_id         uuid NOT NULL,
   rule_id             text NOT NULL,
   engine_version      text NOT NULL,
@@ -128,7 +150,7 @@ CREATE TABLE hunt_match (
 -- Scan result cache (spec 15.4):
 -- (tenant_id, artifact_sha256, rule_bundle_digest, yara_x_engine_version, scan_config_digest)
 CREATE TABLE scan_cache (
-  tenant_id           uuid NOT NULL,
+  tenant_id           uuid NOT NULL REFERENCES tenant (id),
   artifact_sha256     bytea NOT NULL,
   rule_bundle_digest  text NOT NULL,
   engine_version      text NOT NULL,

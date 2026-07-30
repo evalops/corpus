@@ -4,6 +4,23 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+// ---------- tenants ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantCreateRequest {
+    pub slug: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TenantResponse {
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
 // ---------- ingest ----------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -51,38 +51,46 @@ done
 curl -fsS "http://${CORPUS_LISTEN}/api/v1/health" && echo
 
 CTL="cargo run -q -p corpusctl --"
+# Demo runs under an explicit tenant so multi-tenancy is exercised end-to-end.
+# The seeded `default` tenant still works when --tenant is omitted.
+TENANT_SLUG="demo"
+echo "==> ensuring demo tenant exists"
+$CTL tenants create --slug "$TENANT_SLUG" --name "Demo tenant" >/dev/null 2>&1 \
+  || $CTL tenants get "$TENANT_SLUG"
+$CTL tenants list
+CTL_T="$CTL --tenant $TENANT_SLUG"
 
 echo "==> importing testdata (first pass: uploads)"
-$CTL import testdata --capture-reason baseline
+$CTL_T import testdata --capture-reason baseline
 
 echo "==> re-importing (second pass: dedup hits still record occurrences)"
-$CTL import testdata --capture-reason baseline
+$CTL_T import testdata --capture-reason baseline
 
 echo "==> registering rule"
-$CTL rules add testdata/corpus_demo_marker.yar
+$CTL_T rules add testdata/corpus_demo_marker.yar
 
 echo "==> publishing immutable bundle with forward coverage active"
-BUNDLE_OUT=$($CTL bundles publish --rule CorpusDemoMarker --activate)
+BUNDLE_OUT=$($CTL_T bundles publish --rule CorpusDemoMarker --activate)
 echo "$BUNDLE_OUT"
 DIGEST=$(echo "$BUNDLE_OUT" | sed -n 's/^bundle_digest: \([0-9a-f]*\).*/\1/p')
 
 echo "==> creating and running retro-hunt"
-HUNT_OUT=$($CTL hunts create --bundle "$DIGEST")
+HUNT_OUT=$($CTL_T hunts create --bundle "$DIGEST")
 echo "$HUNT_OUT"
 HUNT_ID=$(echo "$HUNT_OUT" | sed -n 's/^hunt_id: \([0-9a-f-]*\).*/\1/p')
-$CTL hunts run "$HUNT_ID"
+$CTL_T hunts run "$HUNT_ID"
 
 echo "==> re-running the same hunt (must hit the scan cache, no duplicate matches)"
-$CTL hunts run "$HUNT_ID"
+$CTL_T hunts run "$HUNT_ID"
 
 echo "==> blast-radius report for hunt $HUNT_ID"
-$CTL report blast-radius --hunt "$HUNT_ID"
+$CTL_T report blast-radius --hunt "$HUNT_ID"
 
 echo "==> forward coverage: importing the late marker file with the bundle active"
-$CTL import testdata-late --capture-reason cli_import
+$CTL_T import testdata-late --capture-reason cli_import
 
 echo "==> hunts known to the server (note the forward hunt)"
-$CTL hunts list
+$CTL_T hunts list
 
 echo "==> integration test against the same database (tempfile CAS)"
 cargo test -p corpus-core --test ingest_hunt -- --nocapture

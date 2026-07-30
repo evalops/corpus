@@ -95,9 +95,10 @@ pub async fn list_hunts(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<HuntRespon
     Ok(rows.into_iter().map(HuntRow::into_response).collect())
 }
 
-async fn set_state(pool: &PgPool, hunt_id: Uuid, state: &str) -> Result<()> {
-    sqlx::query("UPDATE hunt SET state = $2 WHERE id = $1")
+async fn set_state(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid, state: &str) -> Result<()> {
+    sqlx::query("UPDATE hunt SET state = $3 WHERE id = $1 AND tenant_id = $2")
         .bind(hunt_id)
+        .bind(tenant_id)
         .bind(state)
         .execute(pool)
         .await?;
@@ -192,6 +193,9 @@ async fn cache_lookup(pool: &PgPool, key: &ScanCacheKey) -> Result<Option<CacheH
 /// committed artifact at/below it not covered by the scan cache, commit
 /// matches idempotently, and land in COMPLETED or COMPLETED_PARTIAL
 /// (spec 15.1, 15.2). Synchronous for M0.
+///
+/// Once a watermark has been pinned, re-runs reuse it (cache-replay path)
+/// and never expand the planned set to newer commits.
 pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid) -> Result<HuntResponse> {
     let hunt = get_hunt(pool, tenant_id, hunt_id).await?;
     if hunt.kind != "retro" {
@@ -202,55 +206,76 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
     }
 
     // VALIDATING: bundle must resolve and compile.
-    set_state(pool, hunt_id, "VALIDATING").await?;
-    let bundle_row: (Uuid,) = sqlx::query_as("SELECT bundle_id FROM hunt WHERE id = $1")
-        .bind(hunt_id)
-        .fetch_one(pool)
-        .await?;
+    set_state(pool, tenant_id, hunt_id, "VALIDATING").await?;
+    let bundle_row: (Uuid,) =
+        sqlx::query_as("SELECT bundle_id FROM hunt WHERE id = $1 AND tenant_id = $2")
+            .bind(hunt_id)
+            .bind(tenant_id)
+            .fetch_one(pool)
+            .await?;
     let sources = registry::bundle_sources(pool, tenant_id, bundle_row.0).await?;
     let compiled = match scan::compile_bundle(&sources) {
         Ok(c) => c,
         Err(e) => {
-            sqlx::query("UPDATE hunt SET state = 'FAILED', error = $2, completed_at = $3 WHERE id = $1")
-                .bind(hunt_id)
-                .bind(&e)
-                .bind(Utc::now())
-                .execute(pool)
-                .await?;
+            sqlx::query(
+                "UPDATE hunt SET state = 'FAILED', error = $3, completed_at = $4
+                 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(hunt_id)
+            .bind(tenant_id)
+            .bind(&e)
+            .bind(Utc::now())
+            .execute(pool)
+            .await?;
             return Err(Error::RuleCompile(e));
         }
     };
 
-    // PLANNED: pin the corpus watermark (max committed artifact sequence).
-    let watermark: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(MAX(seq), 0) FROM artifact WHERE tenant_id = $1 AND storage_state = 'committed'",
-    )
-    .bind(tenant_id)
-    .fetch_one(pool)
-    .await?;
+    // PLANNED: pin the corpus watermark once (max committed artifact sequence).
+    // Re-runs keep the original pin so the planned set is immutable.
+    let watermark = if let Some(w) = hunt.corpus_watermark {
+        w
+    } else {
+        sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) FROM artifact
+             WHERE tenant_id = $1 AND storage_state = 'committed'",
+        )
+        .bind(tenant_id)
+        .fetch_one(pool)
+        .await?
+    };
     let planned: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM artifact WHERE tenant_id = $1 AND storage_state = 'committed' AND seq <= $2",
+        "SELECT count(*) FROM artifact
+         WHERE tenant_id = $1 AND storage_state = 'committed' AND seq <= $2",
     )
     .bind(tenant_id)
     .bind(watermark)
     .fetch_one(pool)
     .await?;
     sqlx::query(
-        "UPDATE hunt SET state = 'PLANNED', corpus_watermark = $2, planned_artifacts = $3 WHERE id = $1",
+        "UPDATE hunt SET state = 'PLANNED', corpus_watermark = $3, planned_artifacts = $4,
+             scanned = 0, cache_hits = 0, matched = 0, timed_out = 0, failed = 0,
+             error = NULL, completed_at = NULL
+         WHERE id = $1 AND tenant_id = $2",
     )
     .bind(hunt_id)
+    .bind(tenant_id)
     .bind(watermark)
     .bind(planned)
     .execute(pool)
     .await?;
 
     // QUEUED -> RUNNING (single node: immediate).
-    set_state(pool, hunt_id, "QUEUED").await?;
-    sqlx::query("UPDATE hunt SET state = 'RUNNING', started_at = $2 WHERE id = $1")
-        .bind(hunt_id)
-        .bind(Utc::now())
-        .execute(pool)
-        .await?;
+    set_state(pool, tenant_id, hunt_id, "QUEUED").await?;
+    sqlx::query(
+        "UPDATE hunt SET state = 'RUNNING', started_at = COALESCE(started_at, $3)
+         WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(hunt_id)
+    .bind(tenant_id)
+    .bind(Utc::now())
+    .execute(pool)
+    .await?;
 
     let artifacts: Vec<(Uuid, Vec<u8>, String)> = sqlx::query_as(
         "SELECT id, sha256, object_key FROM artifact
@@ -325,9 +350,11 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
         }
 
         sqlx::query(
-            "UPDATE hunt SET scanned = $2, cache_hits = $3, matched = $4, timed_out = $5, failed = $6 WHERE id = $1",
+            "UPDATE hunt SET scanned = $3, cache_hits = $4, matched = $5, timed_out = $6, failed = $7
+             WHERE id = $1 AND tenant_id = $2",
         )
         .bind(hunt_id)
+        .bind(tenant_id)
         .bind(scanned)
         .bind(cache_hits)
         .bind(matched)
@@ -343,12 +370,15 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
     } else {
         "COMPLETED"
     };
-    sqlx::query("UPDATE hunt SET state = $2, completed_at = $3 WHERE id = $1")
-        .bind(hunt_id)
-        .bind(final_state)
-        .bind(Utc::now())
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "UPDATE hunt SET state = $3, completed_at = $4 WHERE id = $1 AND tenant_id = $2",
+    )
+    .bind(hunt_id)
+    .bind(tenant_id)
+    .bind(final_state)
+    .bind(Utc::now())
+    .execute(pool)
+    .await?;
 
     get_hunt(pool, tenant_id, hunt_id).await
 }
@@ -389,25 +419,42 @@ pub async fn forward_scan(
         )
         .await?;
 
-        if !outcome.matches.is_empty() {
-            if let Some((forward_hunt_id,)) = sqlx::query_as::<_, (Uuid,)>(
-                "SELECT id FROM hunt WHERE tenant_id = $1 AND bundle_id = $2 AND kind = 'forward'",
-            )
-            .bind(tenant_id)
-            .bind(bundle_id)
-            .fetch_optional(pool)
-            .await?
-            {
-                for m in &outcome.matches {
-                    let summary = serde_json::to_value(m).unwrap_or_default();
-                    commit_match(pool, tenant_id, forward_hunt_id, artifact_id, &m.rule_id, summary).await?;
-                }
-                sqlx::query("UPDATE hunt SET scanned = scanned + 1, matched = matched + $2 WHERE id = $1")
-                    .bind(forward_hunt_id)
-                    .bind(outcome.matches.len() as i64)
-                    .execute(pool)
-                    .await?;
+        if let Some((forward_hunt_id,)) = sqlx::query_as::<_, (Uuid,)>(
+            "SELECT id FROM hunt WHERE tenant_id = $1 AND bundle_id = $2 AND kind = 'forward'",
+        )
+        .bind(tenant_id)
+        .bind(bundle_id)
+        .fetch_optional(pool)
+        .await?
+        {
+            for m in &outcome.matches {
+                let summary = serde_json::to_value(m).unwrap_or_default();
+                commit_match(pool, tenant_id, forward_hunt_id, artifact_id, &m.rule_id, summary).await?;
             }
+            // Count every terminal scan (clean, match, timeout, error) so the
+            // forward hunt reflects post-commit coverage, not only hits.
+            let (d_scanned, d_matched, d_timeout, d_failed) = match outcome.status {
+                ScanStatus::Clean | ScanStatus::Matched => {
+                    (1i64, outcome.matches.len() as i64, 0i64, 0i64)
+                }
+                ScanStatus::Timeout => (0, 0, 1, 0),
+                ScanStatus::Error => (0, 0, 0, 1),
+            };
+            sqlx::query(
+                "UPDATE hunt SET scanned = scanned + $2, matched = matched + $3,
+                     timed_out = timed_out + $4, failed = failed + $5
+                 WHERE id = $1 AND tenant_id = $6",
+            )
+            .bind(forward_hunt_id)
+            .bind(d_scanned)
+            .bind(d_matched)
+            .bind(d_timeout)
+            .bind(d_failed)
+            .bind(tenant_id)
+            .execute(pool)
+            .await?;
+        }
+        if !rule_ids.is_empty() {
             all_matches.extend(rule_ids);
         }
     }
