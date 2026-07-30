@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: corpus
+      POSTGRES_PASSWORD: corpus
+      POSTGRES_DB: corpus
+    ports:
+      # 5432 is often taken by a host-native Postgres; use 5433 for the dev stack.
+      - "5433:5432"
+    volumes:
+      - corpus-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corpus -d corpus"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  corpus-pgdata:

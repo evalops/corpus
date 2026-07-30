@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/corpus-core",
+    "crates/corpus-server",
+    "crates/corpusctl",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://example.invalid/corpus"
+
+[profile.release]
+debug = true
