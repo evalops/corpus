@@ -3,5 +3,7 @@
 /testdata
 /testdata-late
 /.demo-server.log
+/.demo-agent-server.log
 Cargo.lock.bak
 .DS_Store
+/agent-demo

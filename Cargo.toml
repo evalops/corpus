@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/corpus-agent",
     "crates/corpus-core",
     "crates/corpus-server",
     "crates/corpusctl",

@@ -160,6 +160,92 @@ async fn blast_radius(
     }
 }
 
+// ---------- agent endpoints (M1) ----------
+
+fn bearer_token(headers: &HeaderMap) -> Result<String, AppError> {
+    let v = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| Error::BadRequest("missing bearer token".into()))?;
+    Ok(v.to_string())
+}
+
+async fn create_enrollment_token(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<EnrollmentTokenCreateRequest>,
+) -> Result<Json<EnrollmentTokenResponse>, AppError> {
+    Ok(Json(
+        corpus_core::agents::create_enrollment_token(
+            &st.pool,
+            tenant(&headers)?,
+            req.label.as_deref().unwrap_or(""),
+            req.ttl_secs,
+        )
+        .await?,
+    ))
+}
+
+async fn enroll(
+    State(st): State<AppState>,
+    Json(req): Json<EnrollRequest>,
+) -> Result<Json<EnrollResponse>, AppError> {
+    Ok(Json(corpus_core::agents::enroll(&st.pool, &req).await?))
+}
+
+async fn agent_heartbeat(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(hb): Json<HeartbeatRequest>,
+) -> Result<StatusCode, AppError> {
+    let ident = corpus_core::agents::authenticate(&st.pool, &bearer_token(&headers)?).await?;
+    corpus_core::agents::heartbeat(&st.pool, &ident, &hb).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn report_gaps(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(gaps): Json<Vec<GapEvent>>,
+) -> Result<StatusCode, AppError> {
+    let ident = corpus_core::agents::authenticate(&st.pool, &bearer_token(&headers)?).await?;
+    corpus_core::agents::record_gaps(&st.pool, &ident, &gaps).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_agents(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AgentStatusResponse>>, AppError> {
+    Ok(Json(corpus_core::agents::list_agents(&st.pool, tenant(&headers)?).await?))
+}
+
+async fn agent_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<AgentStatusResponse>, AppError> {
+    Ok(Json(corpus_core::agents::agent_status(&st.pool, tenant(&headers)?, agent_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct CoverageGapsQuery {
+    outcome: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn coverage_gaps(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CoverageGapsQuery>,
+) -> Result<Json<Vec<CoverageGapRow>>, AppError> {
+    Ok(Json(
+        corpus_core::agents::coverage_gaps(&st.pool, tenant(&headers)?, q.outcome.as_deref(), q.limit.unwrap_or(100))
+            .await?,
+    ))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -191,6 +277,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/hunts/{hunt_id}", get(get_hunt))
         .route("/api/v1/hunts/{hunt_id}/run", post(run_hunt))
         .route("/api/v1/reports/blast-radius", get(blast_radius))
+        .route("/api/v1/enrollment-tokens", post(create_enrollment_token))
+        .route("/api/v1/agents/enroll", post(enroll))
+        .route("/api/v1/agents/heartbeat", post(agent_heartbeat))
+        .route("/api/v1/agents/gaps", post(report_gaps))
+        .route("/api/v1/agents", get(list_agents))
+        .route("/api/v1/agents/{agent_id}", get(agent_status))
+        .route("/api/v1/coverage/gaps", get(coverage_gaps))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(AppState { pool, cas: std::sync::Arc::new(cas) });
 
