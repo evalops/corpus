@@ -11,6 +11,7 @@ use windows_sys::Win32::Security::Cryptography::{
     CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
 };
 
+#[allow(clippy::unnecessary_mut_passed)] // FFI: the signature requires *mut CRYPT_INTEGER_BLOB
 fn protect(data: &[u8]) -> Result<Vec<u8>> {
     unsafe {
         let mut input = CRYPT_INTEGER_BLOB {
@@ -39,6 +40,7 @@ fn protect(data: &[u8]) -> Result<Vec<u8>> {
     }
 }
 
+#[allow(clippy::unnecessary_mut_passed)] // FFI: the signature requires *mut CRYPT_INTEGER_BLOB
 fn unprotect(data: &[u8]) -> Result<Vec<u8>> {
     unsafe {
         let mut input = CRYPT_INTEGER_BLOB {
