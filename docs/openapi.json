@@ -191,6 +191,38 @@
         "security": [{ "mcpBearer": [] }],
         "responses": { "200": { "description": "JSON-RPC response" } }
       }
+    },
+    "/api/v1/investigate": {
+      "get": {
+        "summary": "Campaign investigation report (sha256 or hunt_id)",
+        "security": [{ "adminBearer": [] }],
+        "parameters": [
+          { "name": "sha256", "in": "query", "schema": { "type": "string" } },
+          { "name": "hunt_id", "in": "query", "schema": { "type": "string", "format": "uuid" } }
+        ],
+        "responses": { "200": { "description": "InvestigationReport JSON" } }
+      }
+    },
+    "/api/v1/detections": {
+      "get": {
+        "summary": "Recent autonomous detection events",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Detection list" } }
+      }
+    },
+    "/api/v1/continuous": {
+      "get": {
+        "summary": "Continuous re-analysis audit log",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Reanalysis records" } }
+      }
+    },
+    "/api/v1/metrics": {
+      "get": {
+        "summary": "Tenant-scoped platform metrics",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "PlatformMetrics" } }
+      }
     }
   }
 }

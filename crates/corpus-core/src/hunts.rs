@@ -438,6 +438,27 @@ pub async fn execute_hunt(
                     match outcome.status {
                         ScanStatus::Matched => {
                             scanned += 1;
+                            let rule_ids: Vec<String> =
+                                outcome.matches.iter().map(|m| m.rule_id.clone()).collect();
+                            let mitre = crate::detect::heuristic_mitre(&rule_ids);
+                            crate::detect::record(
+                                pool,
+                                tenant_id,
+                                *artifact_id,
+                                crate::detect::DetectionInput {
+                                    source: "retro_hunt",
+                                    severity: "high",
+                                    title: &format!("Retro-hunt match: {}", rule_ids.join(",")),
+                                    detail: serde_json::json!({
+                                        "hunt_id": hunt_id,
+                                        "bundle_digest": hunt.bundle_digest,
+                                        "rules": rule_ids,
+                                    }),
+                                    mitre_techniques: &mitre,
+                                },
+                            )
+                            .await
+                            .ok();
                             for m in &outcome.matches {
                                 let summary = serde_json::to_value(m).unwrap_or_default();
                                 commit_match(
@@ -517,22 +538,44 @@ pub async fn run_hunt(
 }
 
 /// Claim the next queued hunt job, if any. Returns `(tenant_id, hunt_id)`.
+/// Uses a transaction so SKIP LOCKED is safe under concurrent workers.
 pub async fn claim_next_job(pool: &PgPool, worker_id: &str) -> Result<Option<(Uuid, Uuid)>> {
+    let mut tx = pool.begin().await?;
     let row: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "UPDATE hunt_job SET claimed_at = now(), claimed_by = $1
-         WHERE hunt_id = (
-           SELECT hunt_id FROM hunt_job
-           WHERE finished_at IS NULL AND claimed_at IS NULL
-           ORDER BY enqueued_at
-           FOR UPDATE SKIP LOCKED
-           LIMIT 1
-         )
-         RETURNING tenant_id, hunt_id",
+        "SELECT tenant_id, hunt_id FROM hunt_job
+         WHERE finished_at IS NULL AND claimed_at IS NULL
+         ORDER BY enqueued_at
+         FOR UPDATE SKIP LOCKED
+         LIMIT 1",
     )
-    .bind(worker_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
-    Ok(row)
+    let Some((tenant_id, hunt_id)) = row else {
+        tx.rollback().await?;
+        return Ok(None);
+    };
+    sqlx::query("UPDATE hunt_job SET claimed_at = now(), claimed_by = $2 WHERE hunt_id = $1")
+        .bind(hunt_id)
+        .bind(worker_id)
+        .execute(&mut *tx)
+        .await?;
+    // Mark hunt RUNNING only if still QUEUED (idempotent claim).
+    let updated = sqlx::query(
+        "UPDATE hunt SET state = 'RUNNING', started_at = COALESCE(started_at, now())
+         WHERE id = $1 AND tenant_id = $2 AND state = 'QUEUED'",
+    )
+    .bind(hunt_id)
+    .bind(tenant_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    if updated == 0 {
+        // Another worker already advanced state; still return for execute
+        // which is safe to re-enter only if not terminal — execute_hunt
+        // will re-read state.
+    }
+    Ok(Some((tenant_id, hunt_id)))
 }
 
 /// Forward coverage (spec 15.9): scan newly committed bytes with every
@@ -626,6 +669,38 @@ pub async fn forward_scan(
             .await?;
         }
         if !rule_ids.is_empty() {
+            let mitre = crate::detect::heuristic_mitre(&rule_ids);
+            crate::detect::record(
+                pool,
+                tenant_id,
+                artifact_id,
+                crate::detect::DetectionInput {
+                    source: "forward_scan",
+                    severity: "medium",
+                    title: &format!("Forward coverage match: {}", rule_ids.join(",")),
+                    detail: serde_json::json!({
+                        "bundle_digest": digest,
+                        "rules": rule_ids,
+                    }),
+                    mitre_techniques: &mitre,
+                },
+            )
+            .await
+            .ok();
+            for m in &outcome.matches {
+                if let Some((forward_hunt_id,)) = sqlx::query_as::<_, (Uuid,)>(
+                    "SELECT id FROM hunt WHERE tenant_id = $1 AND bundle_id = $2 AND kind = 'forward'",
+                )
+                .bind(tenant_id)
+                .bind(bundle_id)
+                .fetch_optional(pool)
+                .await?
+                {
+                    fire_hunt_match(pool, tenant_id, forward_hunt_id, artifact_id, &m.rule_id)
+                        .await
+                        .ok();
+                }
+            }
             all_matches.extend(rule_ids);
         }
     }

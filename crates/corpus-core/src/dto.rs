@@ -386,6 +386,9 @@ pub struct IndicatorsUpsertRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndicatorsUpsertResponse {
     pub upserted: usize,
+    /// Continuous exact-hash re-analysis against endpoint corpus.
+    #[serde(default)]
+    pub continuous: ContinuousHashIntelResult,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -471,4 +474,84 @@ pub struct TriggerCreateResponse {
     pub trigger: TriggerView,
     /// Shown once; needed to verify webhook signatures.
     pub hmac_secret: String,
+}
+
+// ---------- continuous re-analysis + investigation ----------
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContinuousHashIntelResult {
+    pub hits: usize,
+    pub detections: usize,
+    pub hunt_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetectionEventView {
+    pub id: Uuid,
+    pub source: String,
+    pub severity: String,
+    pub title: String,
+    pub detail: serde_json::Value,
+    pub mitre_techniques: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeveritySummary {
+    pub level: String,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecommendedAction {
+    pub action: String,
+    pub priority: String,
+    pub detail: String,
+    pub host_names: Vec<String>,
+    pub sha256s: Vec<String>,
+}
+
+/// Campaign-style investigation report (SOC-facing assemble of corpus evidence).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvestigationReport {
+    pub generated_at: DateTime<Utc>,
+    pub tenant_id: Uuid,
+    pub title: String,
+    pub executive_summary: String,
+    pub severity: SeveritySummary,
+    pub seed_sha256: String,
+    pub seed_artifact_id: Uuid,
+    pub seed_class: String,
+    pub seed_scope: String,
+    pub first_committed_at: DateTime<Utc>,
+    pub opinion: Option<String>,
+    pub prevalence: PrevalenceView,
+    pub detections: Vec<DetectionEventView>,
+    pub mitre_techniques: Vec<String>,
+    pub blast_radius: BlastRadiusReport,
+    pub variants: VariantsResponse,
+    pub recommended_actions: Vec<RecommendedAction>,
+    pub verification_state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlatformMetrics {
+    pub artifacts_committed: i64,
+    pub occurrences: i64,
+    pub hunts_total: i64,
+    pub hunts_queued_or_running: i64,
+    pub hunt_jobs_pending: i64,
+    pub detections_total: i64,
+    pub active_bundles: i64,
+    pub agents_enrolled: i64,
+    pub continuous_reanalyses: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundlePublishResponse {
+    #[serde(flatten)]
+    pub bundle: BundleResponse,
+    /// When continuous re-analysis enqueued a retro-hunt on activate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continuous_retro_hunt_id: Option<Uuid>,
 }

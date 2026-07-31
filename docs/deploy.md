@@ -38,6 +38,8 @@ detonation live beside this file.
 | `CORPUS_AGENT_LEGACY_BEARER` | off | Accept agent bearer on plain listener |
 | `CORPUS_SERVER_URL` | `http://127.0.0.1:8080` | corpusctl client base |
 | `CORPUS_TENANT` | (unset) | corpusctl default tenant header |
+| `CORPUS_AUTO_RETRO_ON_ACTIVATE` | on | Enqueue full retro-hunt when a bundle is activated |
+| `CORPUS_AUTO_HASH_INTEL` | on | Exact-hash continuous hunt on sha256 IOC upsert |
 
 ## Auth policy
 
@@ -148,6 +150,26 @@ The server refuses to start if detonation is enabled without URL/token
 - Terminate TLS for admin on the proxy; forward to `127.0.0.1:8080`.
 - Do not expose `:8080` on a public interface without `CORPUS_ADMIN_TOKEN`.
 - Expose `:8443` (mTLS) only to agents; keep the deployment CA private.
+
+## Continuous re-analysis and investigation
+
+Product loop (Stairwell-shaped ground truth):
+
+1. **Retain** executables (agents, import, OCI, intel).
+2. **Detect** on commit via active bundles (`forward_scan` → `detection_event`).
+3. **Re-examine history** when a bundle is activated (`CORPUS_AUTO_RETRO_ON_ACTIVATE`) or sha256 intel lands (`CORPUS_AUTO_HASH_INTEL`).
+4. **Investigate** with a campaign report:
+   ```sh
+   corpusctl investigate --sha256 <hex>
+   corpusctl investigate --hunt <hunt_id>
+   corpusctl detections
+   corpusctl continuous
+   corpusctl metrics
+   ```
+5. **Act** using `recommended_actions` in the investigation JSON (block_hash, contain_hosts, detonate, set_opinion).
+
+Hunts are executed by the server's durable worker (`hunt_job` claim loop).  
+`corpusctl hunts run` enqueues and polls until terminal.
 
 ## Related docs
 

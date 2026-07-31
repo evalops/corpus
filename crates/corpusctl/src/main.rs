@@ -85,6 +85,21 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ReportCmd,
     },
+    /// Campaign-style investigation (blast radius + detections + actions).
+    Investigate {
+        /// Artifact sha256.
+        #[arg(long)]
+        sha256: Option<String>,
+        /// Completed or in-progress hunt id.
+        #[arg(long)]
+        hunt: Option<Uuid>,
+    },
+    /// Recent autonomous detection events.
+    Detections,
+    /// Continuous re-analysis audit log.
+    Continuous,
+    /// Platform metrics for the resolved tenant.
+    Metrics,
     /// Mint one-time agent enrollment tokens.
     EnrollToken {
         #[command(subcommand)]
@@ -1011,17 +1026,21 @@ async fn main() -> Result<()> {
         Cmd::Bundles { cmd } => match cmd {
             BundlesCmd::Publish { rules, activate } => {
                 let rule_ids = resolve_rule_ids(&client, &rules).await?;
-                let bundle: BundleResponse = client
+                let published: BundlePublishResponse = client
                     .send(
                         client
                             .req(reqwest::Method::POST, "/api/v1/bundles")
                             .json(&BundlePublishRequest { rule_ids, activate }),
                     )
                     .await?;
+                let bundle = &published.bundle;
                 println!(
                     "bundle_digest: {} rules: {} active: {} engine: {}",
                     bundle.digest, bundle.rule_count, bundle.active, bundle.engine_version
                 );
+                if let Some(hid) = published.continuous_retro_hunt_id {
+                    println!("continuous_retro_hunt_id: {hid}");
+                }
             }
             BundlesCmd::List => {
                 let bundles: Vec<BundleResponse> = client
@@ -1130,6 +1149,47 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             }
         },
+
+        Cmd::Investigate { sha256, hunt } => {
+            let path = match (sha256, hunt) {
+                (Some(sha), None) => format!("/api/v1/investigate?sha256={sha}"),
+                (None, Some(id)) => format!("/api/v1/investigate?hunt_id={id}"),
+                _ => bail!("provide exactly one of --sha256 or --hunt"),
+            };
+            let report: InvestigationReport =
+                client.send(client.req(reqwest::Method::GET, &path)).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+
+        Cmd::Detections => {
+            let rows: Vec<DetectionEventView> = client
+                .send(client.req(reqwest::Method::GET, "/api/v1/detections"))
+                .await?;
+            for d in rows {
+                println!(
+                    "{} {} {} {} {:?}",
+                    d.created_at.to_rfc3339(),
+                    d.severity,
+                    d.source,
+                    d.title,
+                    d.mitre_techniques
+                );
+            }
+        }
+
+        Cmd::Continuous => {
+            let rows: Vec<serde_json::Value> = client
+                .send(client.req(reqwest::Method::GET, "/api/v1/continuous"))
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        }
+
+        Cmd::Metrics => {
+            let m: PlatformMetrics = client
+                .send(client.req(reqwest::Method::GET, "/api/v1/metrics"))
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&m)?);
+        }
 
         Cmd::Similar { sha256 } => {
             let resp: SimilarResponse = client
