@@ -81,6 +81,11 @@ enum Cmd {
         #[command(subcommand)]
         cmd: EnrollTokenCmd,
     },
+    /// Deployment CA operations (mTLS agent auth).
+    Ca {
+        #[command(subcommand)]
+        cmd: CaCmd,
+    },
     /// Fleet health (spec 10.11).
     Agents {
         #[command(subcommand)]
@@ -229,6 +234,13 @@ enum IntelCmd {
 enum SimilarityCmd {
     /// Compute features + edges for artifacts that predate M3a.
     Backfill,
+}
+
+#[derive(Subcommand)]
+enum CaCmd {
+    /// Print the deployment CA fingerprint and paths (created on first
+    /// server run under CORPUS_CA_DIR, default ./data/ca).
+    Init,
 }
 
 #[derive(Subcommand)]
@@ -1039,6 +1051,17 @@ async fn main() -> Result<()> {
                     })))
                     .await?;
                 println!("{}", serde_json::to_string_pretty(&resp)?);
+            }
+        },
+
+        Cmd::Ca { cmd } => match cmd {
+            CaCmd::Init => {
+                let ca_dir = std::env::var("CORPUS_CA_DIR").unwrap_or_else(|_| "./data/ca".into());
+                let ca = corpus_core::mtls::load_or_create_ca(std::path::Path::new(&ca_dir), &[])?;
+                let fp = corpus_core::hash::sha256_hex(ca.cert_pem.as_bytes());
+                println!("ca_dir: {}", ca.dir.display());
+                println!("ca_fingerprint_sha256: {fp}");
+                println!("agents must pin this CA (enrollment delivers it to the agent)");
             }
         },
 

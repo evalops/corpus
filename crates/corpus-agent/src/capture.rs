@@ -23,6 +23,7 @@ pub struct AgentRuntime {
     pub cfg: Arc<Config>,
     pub db: Arc<StateDb>,
     pub uploader: Uploader,
+    pub spool_cipher: Option<std::sync::Arc<crate::spool_crypto::SpoolCipher>>,
     pub agent_id: Uuid,
     pub boot_id: Uuid,
     pub host_name: String,
@@ -69,8 +70,9 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
         let read_path = path.clone();
         let max_bytes = rt.cfg.limits.max_artifact_bytes;
         let retries = rt.cfg.limits.stable_read_retries;
+        let spool_cipher = rt.spool_cipher.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            stable_read::stable_read(&read_path, &spool_dir, max_bytes, spool_free, retries, None)
+            stable_read::stable_read(&read_path, &spool_dir, max_bytes, spool_free, retries, None, spool_cipher.as_deref())
         })
         .await?;
 
@@ -188,7 +190,12 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                 let Some(spool) = spool_path.as_ref() else {
                     return retry_or_fail(db, &cand, max_attempts, "missing spool path at UPLOADING".into());
                 };
-                let bytes = std::fs::read(spool)?;
+                let raw = std::fs::read(spool)?;
+                let bytes = match &rt.spool_cipher {
+                    Some(c) => crate::spool_crypto::decrypt_file(c, &raw)
+                        .map_err(|e| anyhow::anyhow!("spool decrypt: {e}"))?,
+                    None => raw,
+                };
                 if let Err(e) = rt.uploader.upload(upload_id, bytes).await {
                     return retry_or_fail(db, &cand, max_attempts, format!("upload: {e}"));
                 }
@@ -307,6 +314,7 @@ mod tests {
             uploader: Uploader::new("http://127.0.0.1:1", "bogus"),
             cfg: Arc::new(cfg),
             db: db.clone(),
+            spool_cipher: None,
             agent_id: Uuid::new_v4(),
             boot_id: Uuid::new_v4(),
             host_name: "test-host".into(),
@@ -330,6 +338,7 @@ mod tests {
             uploader: Uploader::new("http://127.0.0.1:1", "bogus"),
             cfg,
             db: db2.clone(),
+            spool_cipher: None,
             agent_id: Uuid::new_v4(),
             boot_id: Uuid::new_v4(),
             host_name: "test-host".into(),

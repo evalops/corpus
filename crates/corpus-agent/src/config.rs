@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub server_url: String,
+    /// mTLS agent listener URL; derived from server_url when unset.
+    #[serde(default)]
+    pub agent_url: Option<String>,
     /// One-time enrollment token. Ignored once the state DB holds an identity.
     #[serde(default)]
     pub enrollment_token: Option<String>,

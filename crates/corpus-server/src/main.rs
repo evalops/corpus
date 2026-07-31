@@ -9,7 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use corpus_core::cas::FsCas;
 use corpus_core::dto::*;
 use corpus_core::error::Error;
@@ -22,6 +22,7 @@ use uuid::Uuid;
 struct AppState {
     pool: PgPool,
     cas: std::sync::Arc<FsCas>,
+    ca: std::sync::Arc<corpus_core::mtls::DeploymentCa>,
 }
 
 struct AppError(Error);
@@ -311,7 +312,129 @@ async fn enroll(
     State(st): State<AppState>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, AppError> {
-    Ok(Json(corpus_core::agents::enroll(&st.pool, &req).await?))
+    Ok(Json(corpus_core::agents::enroll(&st.pool, &st.ca, &req).await?))
+}
+
+// ---------- mTLS agent listener (M6) ----------
+
+/// Peer certificate DER injected per connection on the agent listener.
+#[derive(Clone)]
+struct PeerCertDer(Option<Vec<u8>>);
+
+async fn peer_identity(st: &AppState, peer: &PeerCertDer) -> Result<corpus_core::agents::AgentIdentity, AppError> {
+    let der = peer
+        .0
+        .as_ref()
+        .ok_or_else(|| Error::Unauthorized("client certificate required".into()))?;
+    let agent_id = corpus_core::mtls::agent_id_from_cert_der(der)?;
+    Ok(corpus_core::agents::authenticate_cert(&st.pool, agent_id).await?)
+}
+
+async fn agent_heartbeat_mtls(
+    State(st): State<AppState>,
+    Extension(peer): Extension<PeerCertDer>,
+    Json(hb): Json<HeartbeatRequest>,
+) -> Result<StatusCode, AppError> {
+    let ident = peer_identity(&st, &peer).await?;
+    corpus_core::agents::heartbeat(&st.pool, &ident, &hb).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn report_gaps_mtls(
+    State(st): State<AppState>,
+    Extension(peer): Extension<PeerCertDer>,
+    Json(gaps): Json<Vec<GapEvent>>,
+) -> Result<StatusCode, AppError> {
+    let ident = peer_identity(&st, &peer).await?;
+    corpus_core::agents::record_gaps(&st.pool, &ident, &gaps).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn renew_cert_mtls(
+    State(st): State<AppState>,
+    Extension(peer): Extension<PeerCertDer>,
+) -> Result<Json<RenewCertResponse>, AppError> {
+    let ident = peer_identity(&st, &peer).await?;
+    Ok(Json(corpus_core::agents::renew_cert(&st.ca, ident.agent_id)?))
+}
+
+async fn announce_mtls(
+    State(st): State<AppState>,
+    Extension(peer): Extension<PeerCertDer>,
+    Json(mut req): Json<AnnounceRequest>,
+) -> Result<Json<AnnounceResponse>, AppError> {
+    let ident = peer_identity(&st, &peer).await?;
+    apply_agent_identity(&ident, &mut req.occurrence);
+    Ok(Json(ingest::announce(&st.pool, ident.tenant_id, &req).await?))
+}
+
+async fn upload_mtls(
+    State(st): State<AppState>,
+    Extension(peer): Extension<PeerCertDer>,
+    Path(upload_id): Path<Uuid>,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let ident = peer_identity(&st, &peer).await?;
+    ingest::stage_upload(&st.pool, &st.cas, ident.tenant_id, upload_id, &body).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn finalize_mtls(
+    State(st): State<AppState>,
+    Extension(peer): Extension<PeerCertDer>,
+    Json(mut req): Json<FinalizeRequest>,
+) -> Result<Json<FinalizeResponse>, AppError> {
+    let ident = peer_identity(&st, &peer).await?;
+    apply_agent_identity(&ident, &mut req.occurrence);
+    Ok(Json(ingest::finalize(&st.pool, &st.cas, ident.tenant_id, &req).await?))
+}
+
+/// Accept loop for the mTLS agent listener: rustls with required client
+/// certs; the peer cert DER is injected as a per-connection extension.
+async fn run_agent_listener(
+    listen: &str,
+    ca: std::sync::Arc<corpus_core::mtls::DeploymentCa>,
+    pool: PgPool,
+    cas: std::sync::Arc<FsCas>,
+) -> anyhow::Result<()> {
+    use axum::Extension as AxExtension;
+    let config = corpus_core::mtls::server_config(&ca)?;
+    let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
+    let listener = tokio::net::TcpListener::bind(listen).await?;
+    tracing::info!(%listen, "mTLS agent listener (client certs required)");
+    let router = Router::new()
+        .route("/api/v1/agents/heartbeat", post(agent_heartbeat_mtls))
+        .route("/api/v1/agents/gaps", post(report_gaps_mtls))
+        .route("/api/v1/agents/renew", post(renew_cert_mtls))
+        .route("/api/v1/artifacts/announce", post(announce_mtls))
+        .route("/api/v1/artifacts/uploads/{upload_id}", put(upload_mtls))
+        .route("/api/v1/artifacts/finalize", post(finalize_mtls))
+        .with_state(AppState { pool, cas, ca });
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let acceptor = acceptor.clone();
+        let router = router.clone();
+        tokio::spawn(async move {
+            let tls = match acceptor.accept(stream).await {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::debug!(error = %e, "agent TLS handshake rejected");
+                    return;
+                }
+            };
+            let peer = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|c| c.first().map(|d| d.as_ref().to_vec()));
+            let app = router.layer(AxExtension(PeerCertDer(peer)));
+            let io = hyper_util::rt::TokioIo::new(tls);
+            let service = hyper_util::service::TowerToHyperService::new(app.into_service());
+            let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                .serve_connection_with_upgrades(io, service)
+                .await;
+        });
+    }
 }
 
 async fn agent_heartbeat(
@@ -781,7 +904,16 @@ async fn main() -> anyhow::Result<()> {
     let default = tenant::get_tenant(&pool, corpus_core::DEFAULT_TENANT).await?;
     tracing::info!(slug = %default.slug, id = %default.id, "default tenant ready");
     let cas = FsCas::new(&cas_root)?;
-    tracing::info!(%cas_root, "filesystem CAS ready (dev profile; not a hostile-sample trust boundary)");
+    tracing::info!(%cas_root, "filesystem CAS ready (dev profile)");
+
+    // mTLS deployment CA (M6): agents authenticate to the agent listener
+    // with client certs signed by this CA.
+    let ca_dir = std::env::var("CORPUS_CA_DIR").unwrap_or_else(|_| "./data/ca".into());
+    let extra_sans: Vec<String> = std::env::var("CORPUS_CA_SANS")
+        .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+        .unwrap_or_default();
+    let ca = std::sync::Arc::new(corpus_core::mtls::load_or_create_ca(std::path::Path::new(&ca_dir), &extra_sans)?);
+    let agent_listen = std::env::var("CORPUS_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
 
     let app = Router::new()
         .route("/api/v1/health", get(health))
@@ -817,7 +949,21 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/triggers/{trigger_id}/test", post(test_trigger))
         .route("/mcp", post(mcp_endpoint))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
-        .with_state(AppState { pool: pool.clone(), cas: std::sync::Arc::new(cas) });
+        .with_state(AppState { pool: pool.clone(), cas: std::sync::Arc::new(cas), ca: ca.clone() });
+
+    // mTLS agent listener (M6): /agents/* + authenticated ingest behind
+    // required client certificates.
+    {
+        let agent_pool = pool.clone();
+        let agent_cas = std::sync::Arc::new(FsCas::new(&cas_root)?);
+        let agent_ca = ca.clone();
+        let agent_listen = agent_listen.clone();
+        tokio::spawn(async move {
+            if let Err(e) = run_agent_listener(&agent_listen, agent_ca, agent_pool, agent_cas).await {
+                tracing::error!(error = %e, "mTLS agent listener failed");
+            }
+        });
+    }
 
     // Trigger outbox delivery loop (M5): poll due rows, POST with HMAC.
     {

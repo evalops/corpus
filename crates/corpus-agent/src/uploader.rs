@@ -12,12 +12,32 @@ pub struct Uploader {
 }
 
 impl Uploader {
+    /// Legacy bearer client (dev mode / tests).
+    #[allow(dead_code)]
     pub fn new(base: &str, token: &str) -> Self {
         Uploader {
             http: reqwest::Client::new(),
             base: base.trim_end_matches('/').to_string(),
             token: token.to_string(),
         }
+    }
+
+    /// mTLS client for the agent listener: pinned deployment CA + the
+    /// enrollment-issued client cert (M6).
+    pub fn new_mtls(base: &str, ca_pem: &str, cert_pem: &str, key_pem: &str) -> Result<Self> {
+        let identity = reqwest::Identity::from_pem(format!("{cert_pem}\n{key_pem}").as_bytes())
+            .context("loading client identity")?;
+        let ca = reqwest::Certificate::from_pem(ca_pem.as_bytes()).context("loading CA root")?;
+        let http = reqwest::Client::builder()
+            .identity(identity)
+            .add_root_certificate(ca)
+            .build()
+            .context("building mTLS client")?;
+        Ok(Uploader {
+            http,
+            base: base.trim_end_matches('/').to_string(),
+            token: String::new(),
+        })
     }
 
     fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {

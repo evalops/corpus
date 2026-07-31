@@ -11,8 +11,11 @@ export DATABASE_URL="${DATABASE_URL:-postgres://corpus:corpus@127.0.0.1:5434/cor
 export CORPUS_CAS_ROOT="${CORPUS_CAS_ROOT:-./data/cas}"
 # Server must listen on all interfaces so the container can reach the host.
 export CORPUS_LISTEN="${CORPUS_LISTEN:-0.0.0.0:8080}"
+export CORPUS_AGENT_LISTEN="${CORPUS_AGENT_LISTEN:-0.0.0.0:8443}"
 export CORPUS_SERVER_URL="http://127.0.0.1:8080"
 export CORPUS_TEST_DATABASE_URL="$DATABASE_URL"
+# Server cert SANs must cover the name the container uses for the host.
+export CORPUS_CA_SANS="host.docker.internal"
 
 SERVER_LOG=".demo-agent-server.log"
 SERVER_PID=""
@@ -62,6 +65,13 @@ echo "==> minting one-time enrollment token"
 TOKEN_OUT=$($CTL enroll-token create --label demo-agent --ttl-secs 3600)
 echo "$TOKEN_OUT"
 TOKEN=$(echo "$TOKEN_OUT" | sed -n 's/^enrollment_token: //p')
+$CTL ca init
+
+echo "==> mTLS default-on proof: bearer-only heartbeat on the plain listener is rejected"
+curl -s -o /dev/null -w 'plain-listener bearer heartbeat -> HTTP %{http_code} (expect 401)\n' \
+    -X POST "http://127.0.0.1:8080/api/v1/agents/heartbeat" \
+    -H 'Authorization: Bearer cpagent-bogus' -H 'Content-Type: application/json' \
+    -d '{"agent_version":"x","policy_digest":"x","baseline_state":"complete","baseline_percent":100,"queue_depth":0,"spool_bytes":0,"oldest_pending_secs":null,"sensor":"x","outcome_counts":{},"last_upload_at":null,"clock_offset_ms":null}'
 
 echo "==> preparing fixtures and agent config"
 rm -rf "$DEMO_DIR"
@@ -77,6 +87,7 @@ head -c 300000 /dev/zero > "$DEMO_DIR/fixtures/big.bin"
 
 cat > "$DEMO_DIR/agent.yaml" <<EOF
 server_url: http://host.docker.internal:8080
+agent_url: https://host.docker.internal:8443
 enrollment_token: $TOKEN
 host_name: corpus-demo-agent
 state_dir: /agent/state
@@ -117,6 +128,7 @@ docker run -d --name "$CONTAINER" --privileged --hostname corpus-demo-agent \
 
 wait_for "agent enrollment + fanotify mark" 60 docker logs "$CONTAINER"
 docker logs "$CONTAINER" 2>&1 | grep -E 'enrolled|fanotify' || true
+docker logs "$CONTAINER" 2>&1 | grep -q 'mTLS client cert issued' && echo "mTLS enrollment confirmed in agent log"
 
 APP_SHA=$(shasum -a 256 "$DEMO_DIR/fixtures/app.bin" | cut -d' ' -f1)
 DROP_SHA=$(shasum -a 256 "$DEMO_DIR/fixtures/dropped.txt" | cut -d' ' -f1)

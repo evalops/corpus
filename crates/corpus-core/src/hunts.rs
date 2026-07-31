@@ -266,6 +266,7 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
     .await?;
 
     // QUEUED -> RUNNING (single node: immediate).
+    let tier = crate::sandbox::tier_from_env();
     set_state(pool, tenant_id, hunt_id, "QUEUED").await?;
     sqlx::query(
         "UPDATE hunt SET state = 'RUNNING', started_at = COALESCE(started_at, $3)
@@ -315,9 +316,19 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
                 }
             }
         } else {
+            // M6: scans run in the sandboxed corpus-scanner subprocess by
+            // default (tier from CORPUS_SCANNER_TIER; inprocess for dev).
             match cas.read(object_key) {
                 Ok(bytes) => {
-                    let outcome = scan::scan_bytes(&compiled, &bytes);
+                    let sample_path = cas.root().join(object_key);
+                    let outcome = crate::sandbox::scan_with_tier(
+                        tier,
+                        &sources,
+                        Some(&compiled),
+                        &bytes,
+                        Some(&sample_path),
+                    )
+                    .await;
                     let rule_ids: Vec<String> =
                         outcome.matches.iter().map(|m| m.rule_id.clone()).collect();
                     commit_cache_entry(
@@ -394,6 +405,8 @@ pub async fn forward_scan(
     artifact_id: Uuid,
     sha_raw: &[u8],
     bytes: &[u8],
+    object_key: &str,
+    cas: &FsCas,
 ) -> Result<Vec<String>> {
     let bundles: Vec<(Uuid, String)> =
         sqlx::query_as("SELECT id, digest FROM rule_bundle WHERE tenant_id = $1 AND active")
@@ -401,6 +414,8 @@ pub async fn forward_scan(
             .fetch_all(pool)
             .await?;
 
+    let tier = crate::sandbox::tier_from_env();
+    let sample_path = cas.root().join(object_key);
     let mut all_matches = Vec::new();
     for (bundle_id, digest) in bundles {
         let key = ScanCacheKey::new(tenant_id, sha_raw.to_vec(), &digest);
@@ -409,7 +424,7 @@ pub async fn forward_scan(
         }
         let sources = registry::bundle_sources(pool, tenant_id, bundle_id).await?;
         let compiled = scan::compile_bundle(&sources).map_err(Error::RuleCompile)?;
-        let outcome = scan::scan_bytes(&compiled, bytes);
+        let outcome = crate::sandbox::scan_with_tier(tier, &sources, Some(&compiled), bytes, Some(&sample_path)).await;
         let rule_ids: Vec<String> = outcome.matches.iter().map(|m| m.rule_id.clone()).collect();
         commit_cache_entry(
             pool,

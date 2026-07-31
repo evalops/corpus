@@ -1,6 +1,6 @@
 //! YARA-X scanning and the scan result cache key (spec 15.4).
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use uuid::Uuid;
@@ -47,14 +47,14 @@ impl ScanCacheKey {
     ];
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternEvidence {
     pub identifier: String,
     pub offset: u64,
     pub length: u64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleMatchEvidence {
     pub rule_id: String,
     pub namespace: String,

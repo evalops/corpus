@@ -176,6 +176,18 @@ pub struct EnrollResponse {
     pub agent_id: Uuid,
     pub agent_token: String,
     pub tenant_id: Uuid,
+    /// Deployment CA the agent pins for the mTLS agent listener.
+    pub ca_cert_pem: String,
+    /// Short-lived client cert + key for the mTLS agent listener.
+    pub client_cert_pem: String,
+    pub client_key_pem: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenewCertResponse {
+    pub client_cert_pem: String,
+    pub client_key_pem: String,
+    pub ca_cert_pem: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

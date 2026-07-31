@@ -335,7 +335,7 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
 
     // Forward coverage (spec 15.9): active bundles scan newly committed bytes.
     let forward_matches =
-        crate::hunts::forward_scan(pool, tenant_id, artifact_id, &sha_raw, &bytes).await?;
+        crate::hunts::forward_scan(pool, tenant_id, artifact_id, &sha_raw, &bytes, &object_key, cas).await?;
 
     // Similarity analysis (spec 16): extract features, generate edges,
     // maintain variant groups. Never blocks the commit.
