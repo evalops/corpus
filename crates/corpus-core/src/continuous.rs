@@ -67,7 +67,7 @@ async fn insert_record(
 }
 
 /// After a bundle is activated for forward coverage, enqueue a full
-/// retro-hunt over the retained endpoint corpus (Stairwell-shaped loop:
+/// retro-hunt over the retained endpoint corpus (continuous re-analysis loop:
 /// new intelligence re-examines history).
 pub async fn on_bundle_activated(
     pool: &PgPool,

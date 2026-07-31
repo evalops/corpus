@@ -153,7 +153,7 @@ The server refuses to start if detonation is enabled without URL/token
 
 ## Continuous re-analysis and investigation
 
-Product loop (Stairwell-shaped ground truth):
+Product loop (operator-owned longitudinal corpus):
 
 1. **Retain** executables (agents, import, OCI, intel).
 2. **Detect** on commit via active bundles (`forward_scan` → `detection_event`).
