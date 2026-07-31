@@ -119,6 +119,10 @@ endpoint (Linux)                     control plane
   key, out-of-process sandboxed analysis (`corpus-scanner` subprocess
   under seatbelt/landlock, tiered toward gVisor/Kata). See
   `docs/hardening-decisions.md` for the research and the honest limits.
+- **M8 — semantic similarity**: pure-Rust function-level matching
+  (iced-x86 disassembly, mnemonic-family signatures, Jaccard scoring,
+  bidirectional coverage, strong/weak edges). No Ghidra/JVM; x86-64
+  only in v1.
 - **M2 — Windows agent (user-mode)**: ReadDirectoryChangesW watcher, USN
   journal recovery signal, handle-based file identity, DPAPI spool-key
   wrap, ADS metadata. User-mode coverage gaps (no exec observation, no
@@ -136,6 +140,35 @@ endpoint (Linux)                     control plane
 - **Intel**: `corpusctl intel taxii --url <srv> --collection <id>
   [--auto-hunt]`, `corpusctl intel malwarebazaar --limit N` (live
   malware — CAS-only, never execute, scope=intel, no occurrences).
+
+## Semantic similarity (M8)
+
+Function-level matching in pure Rust — no Ghidra/JVM (spec 16.2/16.5;
+design and rationale in `docs/semantic-similarity-design.md`).
+
+- **Extraction**: function boundaries from ELF `STT_FUNC` symbols, PE x64
+  `.pdata`, or prologue-pattern scan; iced-x86 disassembly.
+- **Signatures**: Jaccard similarity over a token multiset of mnemonic
+  *family* unigrams/bigrams (opt-stable structure), instruction-mix
+  histograms, block/call estimates. Significance filter (≥5 insns, no
+  thunks) suppresses stubs (our v1 stand-in for known-library
+  suppression).
+- **Edges**: `semantic_variant_strong` (bidirectional coverage ≥ 0.60 and
+  ≥ 3 matched pairs — merges variant groups), `semantic_variant_weak`
+  (≥ 0.35 — leads). Evidence carries the top-5 function pairs with
+  offsets and scores. Bidirectional coverage stops small-loader-matches-
+  big-benign false edges (16.5 step 4).
+- **Honest limits**: x86-64 only (arm64 follow-up); no decompiler; opt
+  drift (-O0/-O2) is handled at family level but tiny functions still
+  blur; thresholds are hand-set, not calibrated against large corpora;
+  packed/high-entropy code records an `analysis_limitation` instead of
+  a confident edge (16.7). Per-function scoring is brute-force per
+  tenant (banded LSH index is the follow-up).
+
+Validation corpus (`tests/semantic.rs`, fixtures compiled at test time,
+never committed): same C source at -O0/-O2/-Os → strong edges + one
+variant group; small source tweak → edge with non-identical pair
+scores; unrelated program → no edge; high-entropy sample → limitation.
 
 ## Windows agent (M2, user-mode fallback)
 

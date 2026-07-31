@@ -23,7 +23,7 @@ pub fn build_pe(dll: &str, func: &str, body: &[u8], checksum: u32, cert: Option<
     let pe = 0x80;
     b[pe..pe + 4].copy_from_slice(b"PE\0\0");
     // COFF header.
-    w16(&mut b, pe + 4, 0x14c); // machine i386
+    w16(&mut b, pe + 4, 0x8664); // machine x86-64
     w16(&mut b, pe + 6, 1); // sections
     w16(&mut b, pe + 20, 0xe0); // size of optional header
     w16(&mut b, pe + 22, 0x0102); // characteristics: executable, 32bit
@@ -249,4 +249,39 @@ mod real_binary_tests {
         );
         assert!(f.import_set.is_some());
     }
+}
+
+/// Minimal ELF64 with a single .text section of arbitrary bytes.
+pub fn build_elf_text(text: &[u8]) -> Vec<u8> {
+    let shstr = b"\0.text\0.shstrtab\0";
+    let ehdr_size = 64usize;
+    let text_off = ehdr_size;
+    let shstr_off = text_off + text.len();
+    let shoff = (shstr_off + shstr.len() + 7) & !7;
+    let mut b = vec![0u8; shoff + 3 * 64];
+    b[0..4].copy_from_slice(b"\x7fELF");
+    b[4] = 2;
+    b[5] = 1;
+    b[6] = 1;
+    w16(&mut b, 16, 2);
+    w16(&mut b, 18, 0x3e);
+    w32(&mut b, 20, 1);
+    b[40..48].copy_from_slice(&(shoff as u64).to_le_bytes());
+    w16(&mut b, 52, 64);
+    w16(&mut b, 58, 64);
+    w16(&mut b, 60, 3);
+    w16(&mut b, 62, 2);
+    b[text_off..text_off + text.len()].copy_from_slice(text);
+    b[shstr_off..shstr_off + shstr.len()].copy_from_slice(shstr);
+    let sh = |b: &mut [u8], i: usize, name: u32, ty: u32, off: usize, size: usize, addr: u64| {
+        let o = shoff + i * 64;
+        w32(b, o, name);
+        w32(b, o + 4, ty);
+        b[o + 16..o + 24].copy_from_slice(&addr.to_le_bytes());
+        b[o + 24..o + 32].copy_from_slice(&(off as u64).to_le_bytes());
+        b[o + 32..o + 40].copy_from_slice(&(size as u64).to_le_bytes());
+    };
+    sh(&mut b, 1, 1, 1, text_off, text.len(), 0x400000);
+    sh(&mut b, 2, 7, 3, shstr_off, shstr.len(), 0);
+    b
 }

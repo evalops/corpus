@@ -22,6 +22,7 @@ pub mod report;
 pub mod rules;
 pub mod sandbox;
 pub mod scan;
+pub mod semantic;
 pub mod similarity;
 pub mod tenant;
 pub mod triggers;

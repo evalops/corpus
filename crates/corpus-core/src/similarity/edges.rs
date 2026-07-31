@@ -315,6 +315,10 @@ pub async fn analyze_artifact(
         }
     }
 
+    // Semantic (spec 16.2/16.5): function-level matching for x86-64.
+    let _ = crate::semantic::edges::analyze_and_link(pool, tenant, artifact, artifact_class, bytes)
+        .await?;
+
     // Provenance: shared compiler hint (context edge only).
     if let Some(hint) = &f.compiler_hint {
         let candidates: Vec<(Uuid,)> = sqlx::query_as(
