@@ -27,6 +27,8 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
         eprintln!("CORPUS_TEST_DATABASE_URL unset; skipping integration test");
         return;
     };
+    // Bearer is now legacy dev mode; agent traffic is mTLS by default.
+    unsafe { std::env::set_var("CORPUS_AGENT_LEGACY_BEARER", "1") };
     let pool = db::connect(&url).await.unwrap();
     db::migrate(&pool).await.unwrap();
     // FK-scoped world: the tenant must exist and be active first.
@@ -37,9 +39,11 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
         .unwrap();
 
     // --- enrollment: one-time token exchange
+    let ca = corpus_core::mtls::load_or_create_ca(tempfile::tempdir().unwrap().path(), &[]).unwrap();
     let tok = agents::create_enrollment_token(&pool, tenant, "itest", Some(3600)).await.unwrap();
     let resp = agents::enroll(
         &pool,
+        &ca,
         &EnrollRequest {
             enrollment_token: tok.token.clone(),
             host_name: "itest-host".into(),
@@ -49,9 +53,11 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     .await
     .unwrap();
     assert_eq!(resp.tenant_id, tenant);
+    assert!(!resp.client_cert_pem.is_empty() && !resp.ca_cert_pem.is_empty());
     // Token is consumed: a second exchange must fail.
     let second = agents::enroll(
         &pool,
+        &ca,
         &EnrollRequest {
             enrollment_token: tok.token,
             host_name: "itest-host".into(),

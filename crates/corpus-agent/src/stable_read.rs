@@ -66,10 +66,11 @@ pub fn stable_read(
     spool_free_bytes: u64,
     retries: u32,
     mutation_hook: MutationHook<'_>,
+    cipher: Option<&crate::spool_crypto::SpoolCipher>,
 ) -> Result<StableReadResult, StableReadError> {
     let mut attempt = 0;
     loop {
-        match read_once(path, spool_dir, max_artifact_bytes, spool_free_bytes, mutation_hook) {
+        match read_once(path, spool_dir, max_artifact_bytes, spool_free_bytes, mutation_hook, cipher) {
             Err(StableReadError::ChangedDuringRead) if attempt < retries => {
                 attempt += 1;
                 continue;
@@ -85,6 +86,7 @@ fn read_once(
     max_artifact_bytes: u64,
     spool_free_bytes: u64,
     mutation_hook: MutationHook<'_>,
+    cipher: Option<&crate::spool_crypto::SpoolCipher>,
 ) -> Result<StableReadResult, StableReadError> {
     // Step 2: open without following unexpected symlinks (platform constant,
     // never a hardcoded flag value).
@@ -103,7 +105,9 @@ fn read_once(
         return Err(StableReadError::SpoolFull);
     }
 
-    // Step 4: stream into the spool while hashing.
+    // Step 4: stream into the spool while hashing. When a cipher is
+    // configured (M6), spool bytes are AEAD ciphertext at rest; the hash
+    // is always over plaintext.
     let spool_path = spool_dir.join(format!("spool-{}", uuid::Uuid::new_v4()));
     let mut out = OpenOptions::new()
         .write(true)
@@ -117,9 +121,22 @@ fn read_once(
         let _ = std::fs::set_permissions(&spool_path, std::fs::Permissions::from_mode(0o600));
     }
 
+    let stream_prefix = cipher.map(|c| {
+        let prefix = crate::spool_crypto::SpoolCipher::stream_prefix();
+        let _ = c;
+        prefix
+    });
+    if let Some(prefix) = &stream_prefix {
+        if let Err(e) = std::io::Write::write_all(&mut out, prefix) {
+            let _ = std::fs::remove_file(&spool_path);
+            return Err(StableReadError::Io(e.to_string()));
+        }
+    }
+
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     let mut total: u64 = 0;
+    let mut chunk_index: u64 = 0;
     let copy_result: Result<(), StableReadError> = loop {
         match file.read(&mut buf) {
             Ok(0) => break Ok(()),
@@ -129,7 +146,17 @@ fn read_once(
                 if total > max_artifact_bytes {
                     break Err(StableReadError::TooLarge { size: total });
                 }
-                if let Err(e) = std::io::Write::write_all(&mut out, &buf[..n]) {
+                let write_result = match (&cipher, &stream_prefix) {
+                    (Some(cipher), Some(prefix)) => {
+                        let ct = cipher.encrypt_chunk(prefix, chunk_index, &buf[..n]);
+                        chunk_index += 1;
+                        let len = (n as u32).to_le_bytes();
+                        std::io::Write::write_all(&mut out, &len)
+                            .and_then(|()| std::io::Write::write_all(&mut out, &ct))
+                    }
+                    _ => std::io::Write::write_all(&mut out, &buf[..n]),
+                };
+                if let Err(e) = write_result {
                     break Err(StableReadError::Io(e.to_string()));
                 }
             }
@@ -183,7 +210,7 @@ mod tests {
         let spool = tempfile::tempdir().unwrap();
         let target = dir.path().join("a.bin");
         std::fs::write(&target, b"stable content").unwrap();
-        let r = stable_read(&target, spool.path(), 1 << 20, 1 << 20, 3, None).unwrap();
+        let r = stable_read(&target, spool.path(), 1 << 20, 1 << 20, 3, None, None).unwrap();
         assert_eq!(r.sha256, corpus_core::hash::sha256_hex(b"stable content"));
         assert_eq!(std::fs::read(&r.spool_path).unwrap(), b"stable content");
     }
@@ -205,6 +232,7 @@ mod tests {
             Some(&move || {
                 std::fs::write(&t2, b"version two of the file!!").unwrap();
             }),
+            None,
         )
         .unwrap_err();
         assert_eq!(err, StableReadError::ChangedDuringRead);
@@ -231,6 +259,7 @@ mod tests {
                     std::fs::write(&t2, b"rewritten").unwrap();
                 }
             }),
+            None,
         )
         .unwrap();
         assert_eq!(r.sha256, corpus_core::hash::sha256_hex(b"rewritten"));
@@ -244,7 +273,7 @@ mod tests {
         std::fs::write(&target, b"target bytes").unwrap();
         let link = dir.path().join("link.bin");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        let err = stable_read(&link, spool.path(), 1 << 20, 1 << 20, 3, None).unwrap_err();
+        let err = stable_read(&link, spool.path(), 1 << 20, 1 << 20, 3, None, None).unwrap_err();
         assert!(
             matches!(err, StableReadError::Io(_)),
             "symlink must be rejected (ELOOP -> Io), got {err:?}"
@@ -269,6 +298,7 @@ mod tests {
             Some(&move || {
                 std::fs::write(&t2, b"short but now much longer").unwrap();
             }),
+            None,
         )
         .unwrap_err();
         assert_eq!(err, StableReadError::ChangedDuringRead);
@@ -281,15 +311,15 @@ mod tests {
         let big = dir.path().join("big.bin");
         std::fs::write(&big, vec![0u8; 4096]).unwrap();
         assert!(matches!(
-            stable_read(&big, spool.path(), 1024, 1 << 20, 3, None),
+            stable_read(&big, spool.path(), 1024, 1 << 20, 3, None, None),
             Err(StableReadError::TooLarge { .. })
         ));
         assert!(matches!(
-            stable_read(&big, spool.path(), 1 << 20, 100, 3, None),
+            stable_read(&big, spool.path(), 1 << 20, 100, 3, None, None),
             Err(StableReadError::SpoolFull)
         ));
         assert_eq!(
-            stable_read(&dir.path().join("gone.bin"), spool.path(), 1 << 20, 1 << 20, 3, None).unwrap_err(),
+            stable_read(&dir.path().join("gone.bin"), spool.path(), 1 << 20, 1 << 20, 3, None, None).unwrap_err(),
             StableReadError::DeletedBeforeRead
         );
     }

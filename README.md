@@ -7,11 +7,47 @@ feeds) is evaluated against bytes retained before it existed, and matches
 join back to host occurrences for blast-radius reporting and analyst
 workflow.
 
-Status: M0 + M1 + M3a + M4 + M5 merged. Apache-2.0.
+Status: M0 + M1 + M3a + M4 + M5 + M6 (hardening) merged. Apache-2.0.
 
-> Dev-profile warning: the Compose stack, filesystem CAS, and bearer-token
-> agent auth are development conveniences. They are not a safe production
-> trust boundary for hostile samples (spec 8.4, invariant #14).
+## Security posture (M6)
+
+What is enforced today, by default:
+
+- **Agent authentication is mTLS.** The server generates a per-deployment
+  CA on first run (`corpusctl ca init` prints its fingerprint); agents
+  enroll with a one-time token and receive a short-lived signed client
+  cert (30-day TTL, rotatable via `POST /agents/renew`). All agent
+  traffic (heartbeats, gaps, artifact ingest) runs over a dedicated mTLS
+  listener (`CORPUS_AGENT_LISTEN`, default :8443) requiring a CA-signed
+  client cert. The bearer token survives only behind
+  `CORPUS_AGENT_LEGACY_BEARER=1` for local dev; it is rejected by
+  default. `corpusctl import` remains an unauthenticated localhost dev
+  path.
+- **Agent spool is encrypted at rest.** XChaCha20-Poly1305, chunked for
+  bounded-memory streaming; the key is generated at enrollment and
+  wrapped by the macOS Keychain (Linux: 0600 key file fallback; kernel
+  keyring/TPM are later scope). Plaintext exists only in memory during
+  upload. Tampered chunks fail AEAD verification — never silently used.
+- **Analysis runs out of process.** YARA-X scanning executes in a
+  `corpus-scanner` subprocess under an OS sandbox: macOS seatbelt (no
+  network, write confinement — see honesty note), Linux landlock
+  (best-effort read-only filesystem view). Timeout and output caps are
+  enforced by the parent. `CORPUS_SCANNER_TIER=inprocess` restores the
+  old dev behavior; `gvisor` is a config tier for real Linux hosts with
+  runsc (not available under Colima).
+
+What production deployments MUST still configure (honest limits):
+
+- **Subprocess + seatbelt/landlock is NOT a hostile-malware boundary**
+  (shared kernel, no resource isolation; on macOS the profile does not
+  narrow filesystem *reads*). Spec invariant #14 stands: scanning hostile
+  samples in production requires gVisor (tier 2) or Kata/microVM-class
+  isolation (tier 3, not built).
+- The admin/CLI REST surface on :8080 is unauthenticated beyond the
+  tenant header. Bind it to localhost or put it behind your own
+  gateway/VPN; the tenant header is not a security boundary.
+- Enrollment's bootstrap step (one-time token exchange) happens over the
+  plain listener; deliver tokens out of band and bind :8080 accordingly.
 
 ## Quickstart
 
@@ -78,6 +114,11 @@ endpoint (Linux)                     control plane
   attestations on no-match reports ("0 hits across N artifacts at
   watermark W"); dropper heuristic (`hunt droppers` — lead generator, not
   a verdict); read-only MCP server (`/mcp`, JSON-RPC, bearer auth).
+- **M6 — hardening**: mTLS agent auth with per-deployment CA and
+  short-lived client certs, AEAD-encrypted agent spool with OS-wrapped
+  key, out-of-process sandboxed analysis (`corpus-scanner` subprocess
+  under seatbelt/landlock, tiered toward gVisor/Kata). See
+  `docs/hardening-decisions.md` for the research and the honest limits.
 
 ## Bootstrapping your vault
 
@@ -94,10 +135,13 @@ endpoint (Linux)                     control plane
 
 ## Limitations and deviations (consolidated)
 
-- **Auth**: enrollment token → bearer token over plain HTTP; no mTLS
-  until M4-hardening. **Not acceptable for hostile-network/production
-  use.** Admin/CLI endpoints are unauthenticated beyond the tenant header;
-  MCP uses a static env token.
+- **Auth**: mTLS for agent traffic is the default (see Security posture);
+  the legacy bearer path needs `CORPUS_AGENT_LEGACY_BEARER=1`. Admin/CLI
+  endpoints and MCP remain unauthenticated/static-token — gateway them in
+  production.
+- **Analysis isolation**: tier 1 subprocess sandboxing has the honest
+  limits above; the subprocess tier recompiles the bundle per artifact
+  (correctness first; batch-scan optimization is follow-up).
 - **Scale**: fuzzy-similarity candidates are brute-force per tenant
   (fine at ~10⁴–10⁵ artifacts; LSH index is follow-up). Retro-hunts are
   synchronous single-node. TAXII polling is single-page.
@@ -107,7 +151,8 @@ endpoint (Linux)                     control plane
 - **fanotify**: FAN_MOVED_TO unsupported on mount marks (renames covered
   by reconcile scan); requires CAP_SYS_ADMIN (root or privileged
   container); macOS builds run poll-sensor only.
-- **Spool** is plaintext with 0600/0700 perms (encryption is M4 scope).
+- **Spool key wrapping**: Linux uses a 0600 key file (kernel keyring and
+  TPM2 are later scope); macOS uses the Keychain.
 - **Similarity**: ssdeep is ppdeep-compatible (pure Rust port, not
   libfuzzy); import-hash equality merges variant groups (can over-group
   trivial same-runtime binaries); goblin can't read macOS chained-fixups
@@ -142,9 +187,9 @@ trigger delivery → dropper hunt → proof of absence). Demo scripts:
 
 - **M2 — Windows beta**: user-mode fallback first, then signed
   minifilter; journal replay, process/image telemetry, packaging.
-- **M4 — macOS & v1 hardening**: Endpoint Security extension, mTLS
-  enrollment, spool encryption, threat-model review, parser sandbox
-  audit, upgrade/rollback, stable APIs.
+- **v1 hardening (remaining)**: Endpoint Security extension for macOS,
+  gVisor/Kata analysis isolation in production, threat-model review,
+  parser sandbox audit, upgrade/rollback, stable APIs.
 - **Similarity depth**: Ghidra/BSim semantic plugin slot (schema ready),
   banded LSH for fuzzy candidates, variant-group analyst overrides.
 - **Response**: dynamic detonation sandbox, OCSF export, action broker,

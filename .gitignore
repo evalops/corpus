@@ -13,3 +13,6 @@ Cargo.lock.bak
 /.demo-similarity-server.log
 /analyst-demo
 /.demo-analyst-server.log
+
+# never commit generated CA material
+crates/*/data/

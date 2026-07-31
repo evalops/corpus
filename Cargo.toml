@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/corpus-agent",
     "crates/corpus-core",
+    "crates/corpus-scanner",
     "crates/corpus-server",
     "crates/corpusctl",
 ]

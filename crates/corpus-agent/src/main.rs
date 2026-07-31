@@ -10,6 +10,7 @@ mod capture;
 mod config;
 mod heartbeat;
 mod sensors;
+mod spool_crypto;
 mod stable_read;
 mod state;
 mod uploader;
@@ -114,9 +115,38 @@ async fn ensure_identity(cfg: &Config, db: &StateDb) -> Result<(uuid::Uuid, Stri
     db.set_identity_many(&[
         ("agent_id", &resp.agent_id.to_string()),
         ("agent_token", &resp.agent_token),
+        ("ca_cert_pem", &resp.ca_cert_pem),
+        ("client_cert_pem", &resp.client_cert_pem),
+        ("client_key_pem", &resp.client_key_pem),
     ])?;
-    tracing::info!(agent_id = %resp.agent_id, "enrolled");
+    tracing::info!(agent_id = %resp.agent_id, "enrolled (mTLS client cert issued)");
     Ok((resp.agent_id, resp.agent_token))
+}
+
+/// Build the mTLS uploader from persisted enrollment material.
+fn mtls_uploader(cfg: &Config, db: &StateDb) -> Result<Uploader> {
+    let (ca, cert, key) = (
+        db.get_identity("ca_cert_pem")?,
+        db.get_identity("client_cert_pem")?,
+        db.get_identity("client_key_pem")?,
+    );
+    match (ca, cert, key) {
+        (Some(ca), Some(cert), Some(key)) => {
+            let base = cfg.agent_url.clone().unwrap_or_else(|| derive_agent_url(&cfg.server_url));
+            Ok(Uploader::new_mtls(&base, &ca, &cert, &key)?)
+        }
+        _ => {
+            tracing::warn!("no client cert material in state db; re-enroll to enable mTLS");
+            anyhow::bail!("missing mTLS client cert material; delete state and re-enroll")
+        }
+    }
+}
+
+fn derive_agent_url(server_url: &str) -> String {
+    // http://host:8080 -> https://host:8443
+    let without_scheme = server_url.trim_start_matches("http://").trim_start_matches("https://");
+    let host = without_scheme.split(':').next().unwrap_or("127.0.0.1");
+    format!("https://{host}:8443")
 }
 
 async fn run(cfg_path: PathBuf) -> Result<()> {
@@ -130,7 +160,7 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
     }
 
     let db = Arc::new(StateDb::open(&cfg.state_dir.join("agent.db"))?);
-    let (agent_id, agent_token) = ensure_identity(&cfg, &db).await?;
+    let (agent_id, _agent_token) = ensure_identity(&cfg, &db).await?;
     let host_name = cfg.host_name.clone().unwrap_or_else(hostname);
     let boot_id_str = os_boot_id();
     if refresh_boot_identity(&db, &boot_id_str)? {
@@ -139,9 +169,10 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
     let boot_id = uuid::Uuid::parse_str(&boot_id_str).unwrap_or_else(|_| uuid::Uuid::new_v4());
 
     let rt = Arc::new(AgentRuntime {
-        uploader: Uploader::new(&cfg.server_url, &agent_token),
+        uploader: mtls_uploader(&cfg, &db)?,
         cfg: cfg.clone(),
         db: db.clone(),
+        spool_cipher: Some(std::sync::Arc::new(spool_crypto::SpoolCipher::load_or_create(&cfg.state_dir)?)),
         agent_id,
         boot_id,
         host_name,

@@ -45,6 +45,8 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
         eprintln!("CORPUS_TEST_DATABASE_URL unset; skipping integration test");
         return;
     };
+    // The bearer path under test is legacy dev mode (mTLS is the default).
+    unsafe { std::env::set_var("CORPUS_AGENT_LEGACY_BEARER", "1") };
     let pool = db::connect(&url).await.unwrap();
     db::migrate(&pool).await.unwrap();
 

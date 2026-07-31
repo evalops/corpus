@@ -49,7 +49,9 @@ pub async fn create_enrollment_token(
 }
 
 /// Exchange a one-time enrollment token for an agent identity + bearer token.
-pub async fn enroll(pool: &PgPool, req: &EnrollRequest) -> Result<EnrollResponse> {
+/// The response also carries a signed mTLS client cert for the agent
+/// listener — the bearer token is a legacy/dev credential only.
+pub async fn enroll(pool: &PgPool, ca: &crate::mtls::DeploymentCa, req: &EnrollRequest) -> Result<EnrollResponse> {
     let token_hash = hash_token(&req.enrollment_token);
     let row: Option<(Uuid,)> = sqlx::query_as(
         "UPDATE enrollment_token SET consumed_at = $2
@@ -88,11 +90,48 @@ pub async fn enroll(pool: &PgPool, req: &EnrollRequest) -> Result<EnrollResponse
         .bind(agent_id)
         .execute(pool)
         .await?;
-    Ok(EnrollResponse { agent_id, agent_token, tenant_id })
+    let (client_cert_pem, client_key_pem) = crate::mtls::sign_client_cert(ca, agent_id, crate::mtls::DEFAULT_TTL_DAYS)?;
+    Ok(EnrollResponse {
+        agent_id,
+        agent_token,
+        tenant_id,
+        ca_cert_pem: ca.cert_pem.clone(),
+        client_cert_pem,
+        client_key_pem,
+    })
 }
 
-/// Resolve an agent bearer token to its identity.
+/// Issue a fresh client cert to an agent authenticated over mTLS
+/// (rotation; TTL restarts from now).
+pub fn renew_cert(ca: &crate::mtls::DeploymentCa, agent_id: Uuid) -> Result<crate::dto::RenewCertResponse> {
+    let (client_cert_pem, client_key_pem) = crate::mtls::sign_client_cert(ca, agent_id, crate::mtls::DEFAULT_TTL_DAYS)?;
+    Ok(crate::dto::RenewCertResponse {
+        client_cert_pem,
+        client_key_pem,
+        ca_cert_pem: ca.cert_pem.clone(),
+    })
+}
+
+/// Resolve an agent by cert-derived identity (mTLS path).
+pub async fn authenticate_cert(pool: &PgPool, agent_id: Uuid) -> Result<AgentIdentity> {
+    let row: Option<(Uuid, Uuid, String)> =
+        sqlx::query_as("SELECT id, tenant_id, host_name FROM agent WHERE id = $1")
+            .bind(agent_id)
+            .fetch_optional(pool)
+            .await?;
+    let (agent_id, tenant_id, host_name) =
+        row.ok_or_else(|| Error::Unauthorized("unknown agent cert identity".into()))?;
+    Ok(AgentIdentity { agent_id, tenant_id, host_name })
+}
+
+/// Resolve an agent bearer token to its identity. Legacy dev mode only —
+/// requires CORPUS_AGENT_LEGACY_BEARER=1 on the server.
 pub async fn authenticate(pool: &PgPool, bearer: &str) -> Result<AgentIdentity> {
+    if std::env::var("CORPUS_AGENT_LEGACY_BEARER").is_err() {
+        return Err(Error::Unauthorized(
+            "bearer auth disabled (mTLS agent listener is the default); set CORPUS_AGENT_LEGACY_BEARER=1 for legacy dev mode".into(),
+        ));
+    }
     let row: Option<(Uuid, Uuid, String)> =
         sqlx::query_as("SELECT id, tenant_id, host_name FROM agent WHERE token_sha256 = $1")
             .bind(hash_token(bearer))
