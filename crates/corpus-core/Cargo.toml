@@ -21,6 +21,8 @@ sqlx = { version = "0.8", default-features = false, features = [
     "migrate",
 ] }
 thiserror = "2"
+tracing = "0.1"
+goblin = "0.10"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
 yara-x = "1"
 

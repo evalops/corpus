@@ -6,8 +6,8 @@ those bytes were observed. New intelligence (YARA-X rules, hashes) can then
 be evaluated against bytes retained before the intelligence existed, and
 matches are joined back to host occurrences for blast-radius reporting.
 
-Status: Milestone 1 (Linux agent) on a first-class multi-tenant spine.
-Apache-2.0.
+Status: Milestone 3a (similarity engine) on a first-class multi-tenant
+spine. Apache-2.0.
 
 > Dev-profile warning: the Compose stack, filesystem CAS, and bearer-token
 > agent auth are development conveniences. They are not a safe production
@@ -115,6 +115,33 @@ network / local dev.
   DELETED_BEFORE_READ, CHANGED_DURING_READ, SENSOR_OVERFLOW, SPOOL_FULL,
   UPLOAD_FAILED all land in `capture_attempt` (2.2).
 
+## Similarity (spec 16, M3a)
+
+Every committed artifact is analyzed post-commit (and via
+`corpusctl similarity backfill` for older corpus):
+
+- **Features** (16.2, versioned, in `similarity_feature`): PE
+  Authentihash-style hash (certificate table + checksum excluded),
+  imphash, ELF build ID, Mach-O/ELF import hashes, ssdeep-compatible
+  fuzzy digest + entropy, section layout, import/export set digests,
+  compiler hints. Unparseable formats store nothing — not an error.
+- **Typed edges** (16.4, `similarity_edge`): `exact_copy`,
+  `normalized_equivalent` (strong → variant groups), `byte_similar`,
+  `shared_provenance` (weak → labeled leads). Every edge carries
+  component evidence, score, and `similarity-model:v1`.
+- **Variant groups** (16.6): deterministic connected components over
+  strong edges only; fuzzy matches NEVER merge groups (28.5).
+- CLI: `corpusctl similar <sha256>`, `variants <sha256>`,
+  `similarity backfill`, and
+  `report blast-radius --expand-variants` which adds group members plus
+  their occurrences and lists weak neighbors as leads (17.1 steps 2-3).
+
+Scale limit: fuzzy candidates are scored brute-force over the per-tenant
+corpus narrowed by format+size bucket — fine at tens of thousands of
+artifacts; the banded LSH index (16.3 layer 3) is the documented
+follow-up. BSim/semantic similarity is an unpopulated plugin slot in the
+schema (no Ghidra/JVM in this slice).
+
 ## Agent notes (spec 10, M1)
 
 - **Capture state machine** (10.4): OBSERVED → DEBOUNCING → OPENING →
@@ -139,8 +166,24 @@ network / local dev.
 - **macOS dev builds** compile with the poll sensor only (fanotify is
   Linux-only, cfg-gated).
 
-## Deviations from the spec (M0/M1, deliberate)
+## Deviations from the spec (M0–M3a, deliberate)
 
+- **Similarity (M3a)**:
+  - ssdeep implementation is ppdeep-compatible (pure Rust port, verified
+    against ppdeep known vectors), not libfuzzy.
+  - Import-hash equality (`imphash`, `macho_import_hash`,
+    `elf_import_hash`) creates `normalized_equivalent` edges and merges
+    groups; trivial programs sharing a runtime import table (e.g. two
+    libc-only tools) can over-group. Body-hash features (Authentihash,
+    ELF build ID, section layout) corroborate; this is the documented
+    M3a edge policy and is reviewable per-edge via evidence.
+  - goblin cannot read imports from macOS chained-fixups binaries
+    (default since Xcode 15); Mach-O import hashes may be absent there.
+    Fixtures/tests compile with a macOS 11 target to force classic
+    fixups. Mach-O code-directory hashes are not extracted (goblin does
+    not parse LC_CODE_SIGNATURE).
+  - `.NET`, MSI/LNK, resource hashes, string MinHash, and capa bitmaps
+    are out of scope for M3a.
 - **Auth**: enrollment token → bearer token over plain HTTP; no mTLS yet
   (M1-production hardening). Agent ingest (announce/upload/finalize) is
   bearer-authenticated and the server overwrites occurrence identity from
@@ -179,10 +222,14 @@ Unit tests: hash recompute/mismatch, bundle digest determinism,
 magic-byte classification, scan cache key, CAS create-if-absent, tenant
 slug validation, capture state machine durability, stable-read mutation
 detection (injected mid-read mutation), baseline checkpoint resume after
-a simulated crash, reconcile change detection, gap batching. Integration
-tests: full ingest→hunt→report path with sticky watermarks and
-cross-tenant isolation (no shared dedup, no cross-tenant reads), and the
-enroll→heartbeat→gaps→dedup-occurrence agent path.
+a simulated crash, reconcile change detection, gap batching, ssdeep
+known vectors (ppdeep), entropy, crafted-PE import/Authentihash
+extraction, ELF build-ID extraction, fuzzy-never-merges rule.
+Integration tests: full ingest→hunt→report path with sticky watermarks
+and cross-tenant isolation, the enroll→heartbeat→gaps→dedup-occurrence
+agent path, authenticated agent ingest (spawned server), and the
+similarity pipeline (normalized edges, group merge determinism, weak
+leads, blast-radius expansion).
 
 Verified on real hosts (2026-07-30): agent on macOS (poll sensor) and on
 a Debian x86_64 LXC over LAN (fanotify, root) against the dev server —
@@ -194,9 +241,10 @@ gaps, and heartbeats all confirmed end-to-end.
 - **M2 — Windows beta**: user-mode fallback first, then signed
   minifilter; journal replay, process/image telemetry, enterprise
   packaging and health.
-- **M3 — similarity & incident workflow**: Ghidra/BSim variants, variant
-  groups + evidence, current-state verification, OCSF export, action
-  broker, reference connectors.
+- **M3b/c — similarity depth & incident workflow**: Ghidra/BSim semantic
+  plugin slot (schema ready), variant-group analyst overrides, OCSF
+  export, action broker, current-state verification, reference
+  connectors.
 - **M4 — macOS & v1 hardening**: Endpoint Security extension, FSEvents
   fallback, threat-model review, parser sandbox audit, mTLS enrollment,
   spool encryption, upgrade/rollback, stable APIs.

@@ -97,7 +97,9 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
         .unwrap();
 
     // (a) Bad bearer token → 401.
-    let bytes = b"auth test payload";
+    // Payload must be unique per run: the test DB is shared and dedup is real.
+    let bytes = format!("auth test payload {}", Uuid::new_v4());
+    let bytes = bytes.as_bytes();
     let sha = corpus_core::hash::sha256_hex(bytes);
     let forged_id = Uuid::new_v4();
     let resp = http
@@ -168,7 +170,8 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
 
     // (c) No bearer at all: unauthenticated dev path still works
     // (corpusctl import / scripts/demo.sh).
-    let dev_bytes = b"dev path payload";
+    let dev_bytes = format!("dev path payload {}", Uuid::new_v4());
+    let dev_bytes = dev_bytes.as_bytes();
     let dev_sha = corpus_core::hash::sha256_hex(dev_bytes);
     let resp = http
         .post(format!("{base}/api/v1/artifacts/announce"))

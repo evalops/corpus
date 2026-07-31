@@ -37,6 +37,10 @@ demo:
 demo-agent:
     bash scripts/demo-agent.sh
 
+# M3a similarity demo (variants, edges, blast-radius expansion).
+demo-similarity:
+    bash scripts/demo-similarity.sh
+
 # Generate demo fixtures without running the demo.
 fixtures:
     bash scripts/gen-testdata.sh testdata
