@@ -44,6 +44,13 @@ RustCrypto).**
 - Whole-file AEAD per spool object: `nonce(24B) || ciphertext || tag`.
   Files are bounded by `max_artifact_bytes`; chunked streaming AEAD is a
   documented follow-up (large-file tier).
+- Chunked spool (v2, M9): per-chunk nonce = 16-byte random prefix ||
+  8-byte little-endian chunk counter, prefix random from `OsRng` (no
+  UUID-derived randomness anywhere). File layout: `[u8 version=2][16B
+  prefix][u32 len][ct]...`. The v1 layout (8-byte prefix, no version
+  byte) is rejected on read: the spool is transient, so pre-upgrade
+  spool files are discarded rather than migrated — the affected
+  candidates terminalize as gaps and are re-observed by the sensors.
 - Key: 32 random bytes generated at enrollment. Wrapping:
   - macOS: Keychain generic-password item via `security-framework` 3.x
     (mature, servo-maintained).

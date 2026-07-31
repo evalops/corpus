@@ -123,9 +123,11 @@ pub struct DropperCandidate {
 }
 
 /// Dropper heuristic (lead generator, NOT a verdict): artifacts with low
-/// prevalence (host_count <= max_hosts) first-observed within
-/// +/- window_hours of an occurrence of the seed artifact or any of its
-/// variant group members, on the same host.
+/// prevalence (host_count <= max_hosts) whose FIRST observation on a host
+/// falls within +/- window_hours of an occurrence of the seed artifact or
+/// any of its variant group members, on the same host. A candidate whose
+/// first observation on that host is outside the window does NOT match,
+/// even if a later occurrence happens to land inside it.
 pub async fn dropper_candidates(
     pool: &PgPool,
     tenant: Uuid,
@@ -162,28 +164,39 @@ pub async fn dropper_candidates(
         min_delta: i64,
         first_observed: Option<DateTime<Utc>>,
     }
+    // first_occ is each candidate artifact's FIRST observation per host
+    // (MIN(observed_at) per artifact+host); only that first observation is
+    // allowed to fall inside the seed window (M9 review fix).
     let rows: Vec<DropRow> = sqlx::query_as(
         "WITH seed_occ AS (
            SELECT host_name, observed_at FROM occurrence_event
            WHERE tenant_id = $1 AND artifact_id = ANY($2)
          ),
-         cand AS (
-           SELECT DISTINCT a.id, a.sha256, o.host_name, o.path, o.observed_at
+         first_occ AS (
+           SELECT DISTINCT ON (o.artifact_id, o.host_name)
+                  o.artifact_id AS id, o.host_name, o.path, o.observed_at
            FROM occurrence_event o
            JOIN artifact a ON a.tenant_id = o.tenant_id AND a.id = o.artifact_id
-           JOIN seed_occ s ON s.host_name = o.host_name
-                          AND abs(extract(epoch FROM (o.observed_at - s.observed_at))) <= $3
            WHERE o.tenant_id = $1 AND NOT (o.artifact_id = ANY($2))
              AND a.scope = 'endpoint'
+           ORDER BY o.artifact_id, o.host_name, o.observed_at ASC
+         ),
+         cand AS (
+           SELECT f.id, f.host_name, f.path,
+                  min(abs(extract(epoch FROM (f.observed_at - s.observed_at))))::bigint AS min_delta
+           FROM first_occ f
+           JOIN seed_occ s ON s.host_name = f.host_name
+                          AND abs(extract(epoch FROM (f.observed_at - s.observed_at))) <= $3
+           GROUP BY f.id, f.host_name, f.path
          )
-         SELECT c.id, c.sha256, c.host_name, c.path,
+         SELECT c.id, a.sha256, c.host_name, c.path,
                 (SELECT count(DISTINCT o2.host_name) FROM occurrence_event o2
                  WHERE o2.tenant_id = $1 AND o2.artifact_id = c.id) AS host_count,
-                (SELECT min(abs(extract(epoch FROM (c.observed_at - s.observed_at))))::bigint
-                 FROM seed_occ s WHERE s.host_name = c.host_name) AS min_delta,
+                c.min_delta AS min_delta,
                 (SELECT min(o3.observed_at) FROM occurrence_event o3
                  WHERE o3.tenant_id = $1 AND o3.artifact_id = c.id) AS first_observed
          FROM cand c
+         JOIN artifact a ON a.tenant_id = $1 AND a.id = c.id
          ORDER BY min_delta ASC
          LIMIT $4",
     )

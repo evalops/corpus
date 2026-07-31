@@ -113,7 +113,11 @@ fn read_once(
         prefix
     });
     if let Some(prefix) = &stream_prefix {
-        if let Err(e) = std::io::Write::write_all(&mut out, prefix) {
+        // Spool format v2: [u8 version][16B prefix][u32 len][ct]...
+        let write_header =
+            std::io::Write::write_all(&mut out, &[crate::spool_crypto::SPOOL_FORMAT_VERSION])
+                .and_then(|()| std::io::Write::write_all(&mut out, prefix));
+        if let Err(e) = write_header {
             let _ = std::fs::remove_file(&spool_path);
             return Err(StableReadError::Io(e.to_string()));
         }

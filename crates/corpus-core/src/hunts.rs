@@ -309,9 +309,16 @@ pub async fn run_hunt(
         let key = ScanCacheKey::new(tenant_id, sha_raw.clone(), &hunt.bundle_digest);
 
         if let Some(hit) = cache_lookup(pool, &key).await? {
-            // Re-running the same immutable hunt never rereads bytes.
+            // Re-running the same immutable hunt never rereads bytes, but
+            // cached TERMINAL states still count: a cached timeout/error
+            // must keep the rerun COMPLETED_PARTIAL instead of silently
+            // relabeling the hunt COMPLETED (spec 15.2, M9 review fix).
             cache_hits += 1;
-            if hit.status == ScanStatus::Matched.as_str() {
+            if hit.status == ScanStatus::Timeout.as_str() {
+                timed_out += 1;
+            } else if hit.status == ScanStatus::Error.as_str() {
+                failed += 1;
+            } else if hit.status == ScanStatus::Matched.as_str() {
                 for rule_id in &hit.matched_rule_ids {
                     commit_match(
                         pool,

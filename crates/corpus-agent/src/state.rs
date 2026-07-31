@@ -504,6 +504,31 @@ impl StateDb {
         Ok(())
     }
 
+    // ---------- USN journal cursor (Windows downtime recovery) ----------
+
+    /// Persisted (journal_id, next_usn) cursor for one volume, or None if
+    /// never recorded (or recorded incompletely).
+    #[allow(dead_code)] // consumed by the cfg(windows) USN recovery and by tests
+    pub fn get_usn_cursor(&self, volume: &str) -> Result<Option<(u64, i64)>> {
+        let id_key = format!("usn_journal_id:{volume}");
+        let usn_key = format!("usn_next_usn:{volume}");
+        let (id, usn) = (self.get_identity(&id_key)?, self.get_identity(&usn_key)?);
+        match (id, usn) {
+            (Some(id), Some(usn)) => Ok(Some((id.parse()?, usn.parse()?))),
+            _ => Ok(None),
+        }
+    }
+
+    /// Persist the cursor atomically: a crash may repeat a journal read
+    /// but cannot store half a cursor.
+    #[allow(dead_code)] // consumed by the cfg(windows) USN recovery and by tests
+    pub fn set_usn_cursor(&self, volume: &str, journal_id: u64, next_usn: i64) -> Result<()> {
+        self.set_identity_many(&[
+            (&format!("usn_journal_id:{volume}"), &journal_id.to_string()),
+            (&format!("usn_next_usn:{volume}"), &next_usn.to_string()),
+        ])
+    }
+
     // ---------- seen files (poll sensor snapshot) ----------
 
     /// Returns true if the file is new or changed since the last snapshot.

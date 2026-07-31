@@ -7,7 +7,7 @@ use corpus_core::cas::FsCas;
 use corpus_core::dto::{
     AnnounceDisposition, AnnounceRequest, FinalizeRequest, OccurrenceInfo, TenantCreateRequest,
 };
-use corpus_core::{db, hash, hunts, ingest, registry, report, tenant};
+use corpus_core::{analyst, db, hash, hunts, ingest, registry, report, tenant};
 use uuid::Uuid;
 
 const MARKER: &[u8] = b"prefix CORPUS_DEMO_MARKER_STRING suffix";
@@ -93,6 +93,230 @@ async fn fresh_tenant(pool: &sqlx::PgPool, label: &str) -> Uuid {
     .await
     .unwrap()
     .id
+}
+
+/// Regression (M9 review): cached terminal states (timeout/error) must
+/// still count on rerun. A hunt that completed PARTIAL must stay PARTIAL
+/// on rerun with the same counters — before the fix, cached timeout/error
+/// rows were skipped by the rerun counters and the hunt was relabeled
+/// COMPLETED.
+#[tokio::test]
+async fn hunt_rerun_counts_cached_timeout_and_error() {
+    let Ok(url) = std::env::var("CORPUS_TEST_DATABASE_URL") else {
+        eprintln!("CORPUS_TEST_DATABASE_URL unset; skipping integration test");
+        return;
+    };
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool).await.unwrap();
+    let cas_dir = tempfile::tempdir().unwrap();
+    let cas = FsCas::new(cas_dir.path()).unwrap();
+    let tenant_id = fresh_tenant(&pool, "partial-rerun").await;
+    let agent = Uuid::new_v4();
+    let boot = Uuid::new_v4();
+
+    // Two artifacts: A will error at scan time (CAS object deleted), B
+    // gets a seeded "timeout" cache row.
+    let (_sha_a, _) = import_bytes(
+        &pool,
+        &cas,
+        tenant_id,
+        "/import/a.bin",
+        b"artifact A bytes",
+        1,
+        agent,
+        boot,
+    )
+    .await;
+    let (sha_b, _) = import_bytes(
+        &pool,
+        &cas,
+        tenant_id,
+        "/import/b.bin",
+        b"artifact B bytes",
+        2,
+        agent,
+        boot,
+    )
+    .await;
+
+    // Inactive bundle: no forward coverage interferes with the setup.
+    let rule = registry::create_rule(
+        &pool,
+        tenant_id,
+        r#"rule RerunMarker { strings: $m = "NO_SUCH_MARKER_RERUN" condition: $m }"#,
+    )
+    .await
+    .unwrap();
+    let bundle = registry::publish_bundle(&pool, tenant_id, &[rule.id], false)
+        .await
+        .unwrap();
+
+    // Seed a cached TIMEOUT for B (as if an earlier scan timed out).
+    let key = corpus_core::scan::ScanCacheKey::new(
+        tenant_id,
+        hash::hex_to_raw(&sha_b).unwrap(),
+        &bundle.digest,
+    );
+    sqlx::query(
+        "INSERT INTO scan_cache
+         (tenant_id, artifact_sha256, rule_bundle_digest, engine_version, scan_config_digest,
+          status, matched_rule_ids, duration_ms, error_code, created_at)
+         VALUES ($1,$2,$3,$4,$5,'timeout','[]',10000,'scan exceeded timeout', now())",
+    )
+    .bind(key.tenant_id)
+    .bind(&key.artifact_sha256)
+    .bind(&key.rule_bundle_digest)
+    .bind(&key.engine_version)
+    .bind(&key.scan_config_digest)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // A's CAS object disappears: the fresh scan errors terminally.
+    let object_key: String = sqlx::query_scalar(
+        "SELECT object_key FROM artifact WHERE tenant_id = $1 AND sha256 = decode($2,'hex')",
+    )
+    .bind(tenant_id)
+    .bind(hash::sha256_hex(b"artifact A bytes"))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    std::fs::remove_file(cas.root().join(&object_key)).unwrap();
+
+    let hunt = hunts::create_hunt(&pool, tenant_id, &bundle.digest)
+        .await
+        .unwrap();
+    let first = hunts::run_hunt(&pool, &cas, tenant_id, hunt.id)
+        .await
+        .unwrap();
+    assert_eq!(first.state, "COMPLETED_PARTIAL");
+    assert_eq!(first.timed_out, 1, "cached timeout must count on first run");
+    assert_eq!(first.failed, 1, "fresh CAS-read error must count");
+    assert_eq!(first.scanned, 0);
+    assert_eq!(first.cache_hits, 1);
+
+    // Rerun: everything is cached now. Counters must be IDENTICAL and the
+    // state must stay COMPLETED_PARTIAL.
+    let second = hunts::run_hunt(&pool, &cas, tenant_id, hunt.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.state, "COMPLETED_PARTIAL",
+        "cached timeout/error must preserve PARTIAL status on rerun"
+    );
+    assert_eq!(second.timed_out, 1);
+    assert_eq!(second.failed, 1);
+    assert_eq!(second.scanned, 0);
+    assert_eq!(second.cache_hits, 2, "rerun is a pure cache replay");
+    assert_eq!(second.planned_artifacts, 2);
+}
+
+/// Regression (M9 review): the dropper heuristic keys on the candidate's
+/// FIRST observation per host. A candidate whose first observation is old
+/// but which has a later occurrence inside the seed window must NOT match.
+#[tokio::test]
+async fn dropper_requires_first_observation_in_window() {
+    let Ok(url) = std::env::var("CORPUS_TEST_DATABASE_URL") else {
+        eprintln!("CORPUS_TEST_DATABASE_URL unset; skipping integration test");
+        return;
+    };
+    let pool = db::connect(&url).await.unwrap();
+    db::migrate(&pool).await.unwrap();
+    let cas_dir = tempfile::tempdir().unwrap();
+    let cas = FsCas::new(cas_dir.path()).unwrap();
+    let tenant_id = fresh_tenant(&pool, "dropper-first-obs").await;
+    let agent = Uuid::new_v4();
+    let boot = Uuid::new_v4();
+
+    let t0 = chrono::DateTime::parse_from_rfc3339("2024-06-01T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let h = chrono::Duration::hours(1);
+
+    // Seed on host1 @ t0.
+    let seed_bytes = b"dropper seed bytes";
+    let seed_sha = hash::sha256_hex(seed_bytes);
+    let mut o = occ("/tmp/seed.exe", 1, agent, boot);
+    o.observed_at = t0;
+    o.file_size = seed_bytes.len() as i64;
+    import_bytes_at(&pool, &cas, tenant_id, seed_bytes, o).await;
+
+    // Recidivist: first observed 48h BEFORE the seed (out of window), but
+    // re-observed 1h after the seed (inside the window). Must NOT match.
+    let old_bytes = b"recidivist bytes";
+    let old_sha = hash::sha256_hex(old_bytes);
+    let mut o = occ("/opt/recidivist.so", 2, agent, boot);
+    o.observed_at = t0 - chrono::Duration::hours(48);
+    o.file_size = old_bytes.len() as i64;
+    import_bytes_at(&pool, &cas, tenant_id, old_bytes, o.clone()).await;
+    let mut o2 = o.clone();
+    o2.observed_at = t0 + h;
+    o2.agent_sequence = 3;
+    import_bytes_at(&pool, &cas, tenant_id, old_bytes, o2).await;
+
+    // Positive control: genuinely first observed inside the window.
+    let new_bytes = b"fresh dropped payload";
+    let new_sha = hash::sha256_hex(new_bytes);
+    let mut o = occ("/tmp/dropped.dll", 4, agent, boot);
+    o.observed_at = t0 + h;
+    o.file_size = new_bytes.len() as i64;
+    import_bytes_at(&pool, &cas, tenant_id, new_bytes, o).await;
+
+    let droppers = analyst::dropper_candidates(&pool, tenant_id, &seed_sha, 5, 24, 50)
+        .await
+        .unwrap();
+    let shas: Vec<&str> = droppers.iter().map(|d| d.sha256.as_str()).collect();
+    assert!(
+        shas.contains(&new_sha.as_str()),
+        "first-observed-in-window candidate must match: {shas:?}"
+    );
+    assert!(
+        !shas.contains(&old_sha.as_str()),
+        "candidate with an old first observation must NOT match on a later occurrence"
+    );
+}
+
+/// import_bytes with a caller-controlled occurrence (custom observed_at).
+async fn import_bytes_at(
+    pool: &sqlx::PgPool,
+    cas: &FsCas,
+    tenant_id: Uuid,
+    bytes: &[u8],
+    o: OccurrenceInfo,
+) {
+    let sha = hash::sha256_hex(bytes);
+    let ann = ingest::announce(
+        pool,
+        tenant_id,
+        &AnnounceRequest {
+            sha256: sha.clone(),
+            size_bytes: bytes.len() as i64,
+            occurrence: Some(o.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    if ann.disposition == AnnounceDisposition::UploadRequired {
+        let upload_id = ann.upload_id.unwrap();
+        ingest::stage_upload(pool, cas, tenant_id, upload_id, bytes)
+            .await
+            .unwrap();
+        ingest::finalize(
+            pool,
+            cas,
+            tenant_id,
+            &FinalizeRequest {
+                upload_id,
+                sha256: sha.clone(),
+                size_bytes: bytes.len() as i64,
+                occurrence: Some(o),
+                scope: None,
+                provenance: None,
+            },
+        )
+        .await
+        .unwrap();
+    }
 }
 
 #[tokio::test]
