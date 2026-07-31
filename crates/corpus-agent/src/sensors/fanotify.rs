@@ -74,8 +74,8 @@ fn init_fanotify(mounts: &[PathBuf]) -> Result<RawFd> {
         // renames-into-tree are covered by the reconciliation scanner.
         // FAN_OPEN_EXEC is attempted best-effort for exec prioritization.
         let tiers: [u64; 2] = [
-            (libc::FAN_CLOSE_WRITE | libc::FAN_OPEN_EXEC) as u64,
-            libc::FAN_CLOSE_WRITE as u64,
+            libc::FAN_CLOSE_WRITE | libc::FAN_OPEN_EXEC,
+            libc::FAN_CLOSE_WRITE,
         ];
         let mut marked = false;
         for mask in tiers {
@@ -91,7 +91,7 @@ fn init_fanotify(mounts: &[PathBuf]) -> Result<RawFd> {
             if rc == 0 {
                 marked = true;
                 any = true;
-                let with_exec = mask & libc::FAN_OPEN_EXEC as u64 != 0;
+                let with_exec = mask & libc::FAN_OPEN_EXEC != 0;
                 tracing::info!(mount = %m.display(), exec_events = with_exec, "fanotify mount mark added");
                 break;
             }
