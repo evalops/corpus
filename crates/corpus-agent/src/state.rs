@@ -152,6 +152,22 @@ impl StateDb {
         Ok(())
     }
 
+    /// Persist several identity keys in ONE transaction: a crash between
+    /// keys (e.g. agent_id written, agent_token not) is impossible.
+    pub fn set_identity_many(&self, pairs: &[(&str, &str)]) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for (key, value) in pairs {
+            tx.execute(
+                "INSERT INTO identity (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![key, value],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Monotonic per-agent occurrence sequence (spec 12.4).
     pub fn next_sequence(&self) -> Result<i64> {
         let conn = self.conn();
@@ -203,6 +219,27 @@ impl StateDb {
         self.conn().execute(
             "UPDATE candidate SET attempts = attempts + 1, next_retry_at = ?2, updated_at = ?3 WHERE id = ?1",
             params![id, next_retry_at, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Defer a candidate WITHOUT burning an attempt. Used for backpressure
+    /// conditions (spool pressure) that must not terminalize.
+    pub fn defer(&self, id: i64, next_retry_at: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE candidate SET next_retry_at = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, next_retry_at, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Renew the lease on a candidate being processed so a slow capture is
+    /// not leased twice concurrently. Safe on terminal rows (they are
+    /// filtered out of due queries regardless).
+    pub fn renew_lease(&self, id: i64, lease_secs: i64) -> Result<()> {
+        self.conn().execute(
+            "UPDATE candidate SET next_retry_at = ?2 WHERE id = ?1 AND state NOT IN ('complete','gap_recorded')",
+            params![id, now() + lease_secs],
         )?;
         Ok(())
     }
@@ -395,15 +432,21 @@ impl StateDb {
         Ok(())
     }
 
-    /// Read and reset per-outcome counters ("since prior heartbeat", 10.11).
-    pub fn drain_counters(&self) -> Result<Vec<(String, i64)>> {
+    /// Read per-outcome counters without clearing them ("counts since
+    /// prior heartbeat", 10.11). Pair with `clear_counters` AFTER the
+    /// heartbeat has been delivered.
+    pub fn read_counters(&self) -> Result<Vec<(String, i64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT outcome, count FROM outcome_counter ORDER BY outcome")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        conn.execute("DELETE FROM outcome_counter", [])?;
         Ok(rows)
+    }
+
+    pub fn clear_counters(&self) -> Result<()> {
+        self.conn().execute("DELETE FROM outcome_counter", [])?;
+        Ok(())
     }
 
     pub fn pending_gaps(&self, limit: i64) -> Result<Vec<PendingGap>> {
@@ -530,10 +573,27 @@ mod tests {
         db.record_gap("baseline", "TOO_LARGE", None, Some("/w/big2"), None, "{}").unwrap();
         let gaps = db.pending_gaps(10).unwrap();
         assert_eq!(gaps.len(), 2);
-        let counters = db.drain_counters().unwrap();
+        // read_counters must NOT clear (heartbeat may fail after reading).
+        let counters = db.read_counters().unwrap();
         assert_eq!(counters, vec![("TOO_LARGE".to_string(), 2)]);
-        assert!(db.drain_counters().unwrap().is_empty(), "counters reset after drain");
+        let counters_again = db.read_counters().unwrap();
+        assert_eq!(counters_again, counters, "read must not clear counters");
+        db.clear_counters().unwrap();
+        assert!(db.read_counters().unwrap().is_empty());
         db.delete_gaps(&[gaps[0].id]).unwrap();
         assert_eq!(db.pending_gaps(10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn defer_does_not_burn_attempts() {
+        let (_dir, db) = open_tmp();
+        let id = db.enqueue("/w/x.bin", 5, "baseline", 0).unwrap().unwrap();
+        db.defer(id, 99999).unwrap();
+        db.defer(id, 99999).unwrap();
+        let c = db.get(id).unwrap().unwrap();
+        assert_eq!(c.attempts, 0, "backpressure deferral must not burn attempts");
+        assert_eq!(c.next_retry_at, 99999);
+        db.set_retry(id, 100000).unwrap();
+        assert_eq!(db.get(id).unwrap().unwrap().attempts, 1);
     }
 }

@@ -142,8 +142,13 @@ network / local dev.
 ## Deviations from the spec (M0/M1, deliberate)
 
 - **Auth**: enrollment token → bearer token over plain HTTP; no mTLS yet
-  (M1-production hardening). Admin/CLI endpoints are unauthenticated in
-  dev beyond the tenant header.
+  (M1-production hardening). Agent ingest (announce/upload/finalize) is
+  bearer-authenticated and the server overwrites occurrence identity from
+  the authenticated agent, but the transport is unencrypted and the
+  no-bearer dev path for `corpusctl import` is unauthenticated. **This is
+  not acceptable for hostile-network or production deployment until mTLS
+  enrollment lands (M4).** Admin/CLI endpoints are unauthenticated in dev
+  beyond the tenant header.
 - **Spool**: plaintext with 0600/0700 permissions; encryption and key
   wrapping deferred (10.3 staged approach).
 - **fanotify FAN_MOVED_TO**: rejected (EINVAL) on mount marks on tested

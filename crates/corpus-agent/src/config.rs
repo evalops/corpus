@@ -132,13 +132,14 @@ impl Config {
     }
 }
 
-/// Substring or `*suffix` / `prefix*` pattern matching for exclusions.
+/// Exclusion matching: `*suffix` matches path suffixes, `prefix*` matches
+/// path prefixes, anything else matches as a substring.
 pub fn matches_exclusion(patterns: &[String], path: &str) -> bool {
     patterns.iter().any(|pat| {
         if let Some(suffix) = pat.strip_prefix('*') {
             path.ends_with(suffix)
         } else if let Some(prefix) = pat.strip_suffix('*') {
-            path.contains(prefix)
+            path.starts_with(prefix)
         } else {
             path.contains(pat.as_str())
         }

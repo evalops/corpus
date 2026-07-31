@@ -99,7 +99,7 @@ pub async fn authenticate(pool: &PgPool, bearer: &str) -> Result<AgentIdentity> 
             .fetch_optional(pool)
             .await?;
     let (agent_id, tenant_id, host_name) =
-        row.ok_or_else(|| Error::BadRequest("invalid agent token".into()))?;
+        row.ok_or_else(|| Error::Unauthorized("invalid agent token".into()))?;
     Ok(AgentIdentity { agent_id, tenant_id, host_name })
 }
 

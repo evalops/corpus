@@ -86,10 +86,11 @@ fn read_once(
     spool_free_bytes: u64,
     mutation_hook: MutationHook<'_>,
 ) -> Result<StableReadResult, StableReadError> {
-    // Step 2: open without following unexpected symlinks.
+    // Step 2: open without following unexpected symlinks (platform constant,
+    // never a hardcoded flag value).
     let mut file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc_open_nofollow())
+        .custom_flags(open_nofollow_flag())
         .open(path)
         .map_err(|e| map_open_err(&e))?;
 
@@ -140,6 +141,13 @@ fn read_once(
         return Err(e);
     }
 
+    // A file that grew or shrank mid-read has mutated even if its metadata
+    // happens to compare equal (e.g. coarse mtime granularity).
+    if total != before.size {
+        let _ = std::fs::remove_file(&spool_path);
+        return Err(StableReadError::ChangedDuringRead);
+    }
+
     // Test seam: mutate the file between read and re-stat.
     if let Some(hook) = mutation_hook {
         hook();
@@ -156,12 +164,12 @@ fn read_once(
 }
 
 #[cfg(unix)]
-fn libc_open_nofollow() -> i32 {
-    128 // O_NOFOLLOW on Linux and macOS
+fn open_nofollow_flag() -> i32 {
+    libc::O_NOFOLLOW
 }
 
 #[cfg(not(unix))]
-fn libc_open_nofollow() -> i32 {
+fn open_nofollow_flag() -> i32 {
     0
 }
 
@@ -226,6 +234,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.sha256, corpus_core::hash::sha256_hex(b"rewritten"));
+    }
+
+    #[test]
+    fn symlinks_are_rejected_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let spool = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real.bin");
+        std::fs::write(&target, b"target bytes").unwrap();
+        let link = dir.path().join("link.bin");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = stable_read(&link, spool.path(), 1 << 20, 1 << 20, 3, None).unwrap_err();
+        assert!(
+            matches!(err, StableReadError::Io(_)),
+            "symlink must be rejected (ELOOP -> Io), got {err:?}"
+        );
+        // And the spool must not contain the target's bytes via the link.
+        assert_eq!(std::fs::read_dir(spool.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn file_grown_during_read_is_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let spool = tempfile::tempdir().unwrap();
+        let target = dir.path().join("grow.bin");
+        std::fs::write(&target, b"short").unwrap();
+        let t2 = target.clone();
+        let err = stable_read(
+            &target,
+            spool.path(),
+            1 << 20,
+            1 << 20,
+            1,
+            Some(&move || {
+                std::fs::write(&t2, b"short but now much longer").unwrap();
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(err, StableReadError::ChangedDuringRead);
     }
 
     #[test]

@@ -37,6 +37,7 @@ impl IntoResponse for AppError {
         let status = match &self.0 {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
+            Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Error::BadRequest(_) | Error::RuleParse(_) => StatusCode::BAD_REQUEST,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::RuleCompile(_) | Error::HashMismatch { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -87,12 +88,46 @@ async fn get_tenant(
     ))
 }
 
+/// Ingest authentication: a bearer token means "agent" — the occurrence's
+/// agent identity is overwritten from the authenticated identity (agents
+/// cannot forge another agent's evidence), and the tenant comes from the
+/// agent row. No bearer means the unauthenticated dev path used by
+/// `corpusctl import` in local demos.
+enum IngestAuth {
+    Agent(corpus_core::agents::AgentIdentity),
+    Dev(Uuid),
+}
+
+async fn ingest_auth(st: &AppState, headers: &HeaderMap) -> Result<IngestAuth, AppError> {
+    if let Some(v) = headers.get("authorization") {
+        let tok = v
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .ok_or_else(|| Error::Unauthorized("malformed authorization header".into()))?;
+        let ident = corpus_core::agents::authenticate(&st.pool, tok).await?;
+        return Ok(IngestAuth::Agent(ident));
+    }
+    Ok(IngestAuth::Dev(resolve_tenant(&st.pool, headers).await?))
+}
+
+fn apply_agent_identity(ident: &corpus_core::agents::AgentIdentity, occ: &mut OccurrenceInfo) {
+    occ.agent_id = ident.agent_id;
+    occ.host_name = ident.host_name.clone();
+}
+
 async fn announce(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<AnnounceRequest>,
+    Json(mut req): Json<AnnounceRequest>,
 ) -> Result<Json<AnnounceResponse>, AppError> {
-    let t = resolve_tenant(&st.pool, &headers).await?;
+    let t = match ingest_auth(&st, &headers).await? {
+        IngestAuth::Agent(ident) => {
+            apply_agent_identity(&ident, &mut req.occurrence);
+            ident.tenant_id
+        }
+        IngestAuth::Dev(t) => t,
+    };
     Ok(Json(ingest::announce(&st.pool, t, &req).await?))
 }
 
@@ -102,7 +137,10 @@ async fn upload(
     Path(upload_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    let t = resolve_tenant(&st.pool, &headers).await?;
+    let t = match ingest_auth(&st, &headers).await? {
+        IngestAuth::Agent(ident) => ident.tenant_id,
+        IngestAuth::Dev(t) => t,
+    };
     ingest::stage_upload(&st.pool, &st.cas, t, upload_id, &body).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -110,9 +148,15 @@ async fn upload(
 async fn finalize(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<FinalizeRequest>,
+    Json(mut req): Json<FinalizeRequest>,
 ) -> Result<Json<FinalizeResponse>, AppError> {
-    let t = resolve_tenant(&st.pool, &headers).await?;
+    let t = match ingest_auth(&st, &headers).await? {
+        IngestAuth::Agent(ident) => {
+            apply_agent_identity(&ident, &mut req.occurrence);
+            ident.tenant_id
+        }
+        IngestAuth::Dev(t) => t,
+    };
     Ok(Json(ingest::finalize(&st.pool, &st.cas, t, &req).await?))
 }
 

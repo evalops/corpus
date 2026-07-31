@@ -21,7 +21,7 @@ async fn send_once(rt: &AgentRuntime) -> anyhow::Result<()> {
         .unwrap_or_else(|| "unknown".into());
     let baseline_percent = if baseline_state == "complete" { 100.0 } else { 0.0 };
     let counts: serde_json::Map<String, serde_json::Value> = db
-        .drain_counters()?
+        .read_counters()?
         .into_iter()
         .map(|(k, v)| (k, serde_json::Value::from(v)))
         .collect();
@@ -45,7 +45,11 @@ async fn send_once(rt: &AgentRuntime) -> anyhow::Result<()> {
             last_upload_at,
             clock_offset_ms: None,
         })
-        .await
+        .await?;
+    // Only clear AFTER the heartbeat was delivered; a transient outage
+    // must not lose counts.
+    db.clear_counters()?;
+    Ok(())
 }
 
 fn spool_bytes(dir: &std::path::Path) -> i64 {
