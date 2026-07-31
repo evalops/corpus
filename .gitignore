@@ -11,3 +11,5 @@ Cargo.lock.bak
 /.demo-bootstrap-server.log
 /demo-sim
 /.demo-similarity-server.log
+/analyst-demo
+/.demo-analyst-server.log

@@ -415,6 +415,351 @@ async fn hash_hunt(
     }))
 }
 
+// ---------- analyst surface (M5) ----------
+
+async fn artifact_id_for(pool: &PgPool, tenant: Uuid, sha: &str) -> Result<Uuid, AppError> {
+    corpus_core::opinions::artifact_for_sha(pool, tenant, sha)
+        .await?
+        .map(|(id,)| id)
+        .ok_or_else(|| Error::NotFound(format!("artifact {sha}")).into())
+}
+
+async fn prevalence(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Result<Json<PrevalenceView>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let id = artifact_id_for(&st.pool, t, &sha256).await?;
+    let p = corpus_core::analyst::prevalence_for(&st.pool, t, id).await?;
+    Ok(Json(PrevalenceView {
+        host_count: p.host_count,
+        path_count: p.path_count,
+        first_observed: p.first_observed,
+        last_observed: p.last_observed,
+    }))
+}
+
+async fn set_opinion(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+    Json(req): Json<OpinionSetRequest>,
+) -> Result<Json<OpinionView>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let id = artifact_id_for(&st.pool, t, &sha256).await?;
+    let actor = req.actor.unwrap_or_else(|| "corpusctl".into());
+    let oid = corpus_core::opinions::set_opinion(&st.pool, t, id, &req.opinion, &actor, &req.reason).await?;
+    let current = corpus_core::opinions::current_opinion(&st.pool, t, id)
+        .await?
+        .ok_or_else(|| Error::NotFound("opinion".into()))?;
+    debug_assert_eq!(current.id, oid);
+    Ok(Json(OpinionView {
+        id: current.id,
+        opinion: current.opinion,
+        actor: current.actor,
+        reason: current.reason,
+        created_at: current.created_at,
+        superseded_by: current.superseded_by,
+    }))
+}
+
+async fn get_opinion(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Result<Json<Option<OpinionView>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let id = artifact_id_for(&st.pool, t, &sha256).await?;
+    let view = corpus_core::opinions::current_opinion(&st.pool, t, id).await?.map(|o| OpinionView {
+        id: o.id,
+        opinion: o.opinion,
+        actor: o.actor,
+        reason: o.reason,
+        created_at: o.created_at,
+        superseded_by: o.superseded_by,
+    });
+    Ok(Json(view))
+}
+
+async fn opinion_history(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Result<Json<Vec<OpinionView>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let id = artifact_id_for(&st.pool, t, &sha256).await?;
+    let rows = corpus_core::opinions::opinion_history(&st.pool, t, id).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|o| OpinionView {
+                id: o.id,
+                opinion: o.opinion,
+                actor: o.actor,
+                reason: o.reason,
+                created_at: o.created_at,
+                superseded_by: o.superseded_by,
+            })
+            .collect(),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    max_hosts: Option<i64>,
+    since: Option<String>,
+    opinion: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn rarity_search(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<SearchQuery>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let since = q
+        .since
+        .as_deref()
+        .map(corpus_core::analyst::parse_since)
+        .transpose()?
+        .unwrap_or_else(|| chrono::Utc::now() - chrono::Duration::days(30));
+    let hits = corpus_core::analyst::rarity_search(
+        &st.pool,
+        t,
+        q.max_hosts.unwrap_or(5),
+        since,
+        q.opinion.as_deref(),
+        q.limit.unwrap_or(100),
+    )
+    .await?;
+    Ok(Json(serde_json::to_value(hits).unwrap_or_default()))
+}
+
+#[derive(Debug, Deserialize)]
+struct DropperRequest {
+    sha256: String,
+    max_hosts: Option<i64>,
+    window_hours: Option<i64>,
+}
+
+async fn dropper_hunt(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<DropperRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let hits = corpus_core::analyst::dropper_candidates(
+        &st.pool,
+        t,
+        &req.sha256,
+        req.max_hosts.unwrap_or(3),
+        req.window_hours.unwrap_or(24),
+        100,
+    )
+    .await?;
+    Ok(Json(serde_json::json!({
+        "note": "lead generator, not a verdict",
+        "candidates": serde_json::to_value(hits).unwrap_or_default(),
+    })))
+}
+
+async fn create_trigger(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<TriggerCreateRequest>,
+) -> Result<Json<TriggerCreateResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let (row, secret) =
+        corpus_core::triggers::create_trigger(&st.pool, t, &req.name, &req.condition, &req.webhook_url, req.secret)
+            .await?;
+    Ok(Json(TriggerCreateResponse {
+        trigger: TriggerView {
+            id: row.id,
+            name: row.name,
+            condition: row.condition,
+            webhook_url: row.webhook_url,
+            enabled: row.enabled,
+            created_at: row.created_at,
+        },
+        hmac_secret: secret,
+    }))
+}
+
+async fn list_triggers(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<TriggerView>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let rows = corpus_core::triggers::list_triggers(&st.pool, t).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| TriggerView {
+                id: r.id,
+                name: r.name,
+                condition: r.condition,
+                webhook_url: r.webhook_url,
+                enabled: r.enabled,
+                created_at: r.created_at,
+            })
+            .collect(),
+    ))
+}
+
+async fn test_trigger(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(trigger_id): Path<Uuid>,
+) -> Result<StatusCode, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT condition FROM trigger_rule WHERE tenant_id = $1 AND id = $2")
+            .bind(t)
+            .bind(trigger_id)
+            .fetch_optional(&st.pool)
+            .await
+            .map_err(Error::from)?;
+    let (condition,) = row.ok_or_else(|| Error::NotFound(format!("trigger {trigger_id}")))?;
+    corpus_core::triggers::fire(
+        &st.pool,
+        t,
+        &condition,
+        serde_json::json!({"type": "test", "trigger_id": trigger_id, "condition": condition}),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---------- MCP read-only server (M5) ----------
+
+async fn mcp_endpoint(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<serde_json::Value>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let token = std::env::var("CORPUS_MCP_TOKEN").unwrap_or_else(|_| "mcp-dev-token".into());
+    let ok = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        == Some(token.as_str());
+    if !ok {
+        return Err(Error::Unauthorized("invalid MCP token".into()).into());
+    }
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(mcp::handle(&st, t, req).await))
+}
+
+mod mcp {
+    use super::*;
+    use serde_json::json;
+
+    fn result(id: &serde_json::Value, result: serde_json::Value) -> serde_json::Value {
+        json!({"jsonrpc": "2.0", "id": id, "result": result})
+    }
+    fn error(id: &serde_json::Value, code: i64, message: &str) -> serde_json::Value {
+        json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
+    }
+
+    pub async fn handle(st: &AppState, tenant: Uuid, req: serde_json::Value) -> serde_json::Value {
+        let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+        match method {
+            "initialize" => result(&id, json!({
+                "protocolVersion": "2024-11-05",
+                "serverInfo": {"name": "corpus-mcp", "version": env!("CARGO_PKG_VERSION")},
+                "capabilities": {"tools": {}},
+            })),
+            "tools/list" => result(&id, json!({"tools": [
+                {"name": "search_artifacts", "description": "Rarity search over endpoint artifacts",
+                 "inputSchema": {"type": "object", "properties": {"max_hosts": {"type": "integer"}, "since": {"type": "string"}}}},
+                {"name": "get_prevalence", "description": "Fleet prevalence for an artifact by sha256",
+                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                {"name": "get_opinion", "description": "Current human opinion for an artifact",
+                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                {"name": "blast_radius", "description": "Blast-radius report by sha256 (historical observation)",
+                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                {"name": "list_variants", "description": "Variant group members for an artifact",
+                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+            ]})),
+            "tools/call" => {
+                let name = req.pointer("/params/name").and_then(|n| n.as_str()).unwrap_or("");
+                let args = req.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
+                call(st, tenant, &id, name, args).await
+            }
+            _ => error(&id, -32601, "method not found"),
+        }
+    }
+
+    async fn call(st: &AppState, tenant: Uuid, id: &serde_json::Value, name: &str, args: serde_json::Value) -> serde_json::Value {
+        let text: String = match name {
+            "search_artifacts" => {
+                let since = args.get("since").and_then(|s| s.as_str()).map(corpus_core::analyst::parse_since);
+                let since = match since {
+                    Some(Ok(t)) => t,
+                    Some(Err(e)) => return error(id, -32602, &e.to_string()),
+                    None => chrono::Utc::now() - chrono::Duration::days(30),
+                };
+                match corpus_core::analyst::rarity_search(
+                    &st.pool,
+                    tenant,
+                    args.get("max_hosts").and_then(|v| v.as_i64()).unwrap_or(5),
+                    since,
+                    None,
+                    50,
+                )
+                .await
+                {
+                    Ok(h) => serde_json::to_string_pretty(&h).unwrap_or_default(),
+                    Err(e) => return error(id, -32000, &e.to_string()),
+                }
+            }
+            "get_prevalence" | "get_opinion" | "blast_radius" | "list_variants" => {
+                let Some(sha) = args.get("sha256").and_then(|s| s.as_str()) else {
+                    return error(id, -32602, "sha256 required");
+                };
+                let r: std::result::Result<serde_json::Value, corpus_core::error::Error> = match name {
+                    "get_prevalence" => async {
+                        let art = corpus_core::opinions::artifact_for_sha(&st.pool, tenant, sha).await?;
+                        match art {
+                            Some((a,)) => {
+                                let p = corpus_core::analyst::prevalence_for(&st.pool, tenant, a).await?;
+                                Ok(json!({"host_count": p.host_count, "path_count": p.path_count,
+                                          "first_observed": p.first_observed, "last_observed": p.last_observed}))
+                            }
+                            None => Ok(json!({"error": "unknown artifact"})),
+                        }
+                    }
+                    .await,
+                    "get_opinion" => async {
+                        let art = corpus_core::opinions::artifact_for_sha(&st.pool, tenant, sha).await?;
+                        match art {
+                            Some((a,)) => {
+                                let o = corpus_core::opinions::current_opinion(&st.pool, tenant, a).await?;
+                                Ok(serde_json::to_value(o).unwrap_or_default())
+                            }
+                            None => Ok(json!({"error": "unknown artifact"})),
+                        }
+                    }
+                    .await,
+                    "blast_radius" => {
+                        corpus_core::report::by_sha256(&st.pool, tenant, sha, false).await.map(|r| serde_json::to_value(r).unwrap_or_default())
+                    }
+                    _ => corpus_core::similarity::edges::variants_view(&st.pool, tenant, sha)
+                        .await
+                        .map(|v| serde_json::to_value(v).unwrap_or_default()),
+                };
+                match r {
+                    Ok(v) => serde_json::to_string_pretty(&v).unwrap_or_default(),
+                    Err(e) => return error(id, -32000, &e.to_string()),
+                }
+            }
+            _ => return error(id, -32602, &format!("unknown tool {name:?}")),
+        };
+        result(id, json!({"content": [{"type": "text", "text": text}]}))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -463,8 +808,29 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/coverage/gaps", get(coverage_gaps))
         .route("/api/v1/intel/indicators", post(upsert_indicators))
         .route("/api/v1/intel/hash-hunt", post(hash_hunt))
+        .route("/api/v1/artifacts/{sha256}/prevalence", get(prevalence))
+        .route("/api/v1/artifacts/{sha256}/opinion", post(set_opinion).get(get_opinion))
+        .route("/api/v1/artifacts/{sha256}/opinion/history", get(opinion_history))
+        .route("/api/v1/search", get(rarity_search))
+        .route("/api/v1/hunts/droppers", post(dropper_hunt))
+        .route("/api/v1/triggers", post(create_trigger).get(list_triggers))
+        .route("/api/v1/triggers/{trigger_id}/test", post(test_trigger))
+        .route("/mcp", post(mcp_endpoint))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
-        .with_state(AppState { pool, cas: std::sync::Arc::new(cas) });
+        .with_state(AppState { pool: pool.clone(), cas: std::sync::Arc::new(cas) });
+
+    // Trigger outbox delivery loop (M5): poll due rows, POST with HMAC.
+    {
+        let delivery_pool = pool.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = corpus_core::triggers::deliver_pending(&delivery_pool).await {
+                    tracing::warn!(error = %e, "trigger delivery sweep failed");
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
+    }
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(%listen, "corpus-server listening");

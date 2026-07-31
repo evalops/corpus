@@ -4,6 +4,7 @@
 //! client-side pieces (hashing, classification, DTOs).
 
 pub mod agents;
+pub mod analyst;
 pub mod cas;
 pub mod classify;
 pub mod db;
@@ -14,12 +15,14 @@ pub mod hunts;
 pub mod ingest;
 pub mod intel;
 pub mod oci;
+pub mod opinions;
 pub mod registry;
 pub mod report;
 pub mod rules;
 pub mod scan;
 pub mod similarity;
 pub mod tenant;
+pub mod triggers;
 
 use uuid::Uuid;
 

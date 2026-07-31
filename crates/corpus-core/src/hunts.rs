@@ -311,6 +311,7 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
                     )
                     .await?;
                     matched += 1;
+                    fire_hunt_match(pool, tenant_id, hunt_id, *artifact_id, rule_id).await?;
                 }
             }
         } else {
@@ -335,6 +336,7 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
                                 let summary = serde_json::to_value(m).unwrap_or_default();
                                 commit_match(pool, tenant_id, hunt_id, *artifact_id, &m.rule_id, summary).await?;
                                 matched += 1;
+                                fire_hunt_match(pool, tenant_id, hunt_id, *artifact_id, &m.rule_id).await?;
                             }
                         }
                         ScanStatus::Clean => scanned += 1,
@@ -459,4 +461,28 @@ pub async fn forward_scan(
         }
     }
     Ok(all_matches)
+}
+
+/// Trigger event for a committed hunt match (fires are idempotent-tolerant;
+/// the outbox is at-least-once by design).
+async fn fire_hunt_match(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    hunt_id: Uuid,
+    artifact_id: Uuid,
+    rule_id: &str,
+) -> Result<()> {
+    crate::triggers::fire(
+        pool,
+        tenant_id,
+        crate::triggers::CONDITION_HUNT_MATCH,
+        serde_json::json!({
+            "type": "hunt_match",
+            "hunt_id": hunt_id,
+            "artifact_id": artifact_id,
+            "rule_id": rule_id,
+        }),
+    )
+    .await?;
+    Ok(())
 }

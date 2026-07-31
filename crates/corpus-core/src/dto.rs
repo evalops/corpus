@@ -300,6 +300,10 @@ pub struct BlastRadiusArtifact {
     pub artifact_class: String,
     pub first_committed_at: DateTime<Utc>,
     pub matched_rules: Vec<String>,
+    /// Fleet prevalence (M5): distinct hosts/paths, first/last observed.
+    pub prevalence: Option<PrevalenceView>,
+    /// Current human opinion (spec 5.5), if any.
+    pub opinion: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +341,9 @@ pub struct BlastRadiusReport {
     /// Present only when the report was requested with expand_variants.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variant_expansion: Option<VariantExpansion>,
+    /// Present when the query matched nothing: proof of absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<Attestation>,
 }
 
 // ---------- intel (M4 vault bootstrap) ----------
@@ -376,4 +383,71 @@ pub struct HashHuntHitView {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashHuntResponse {
     pub hits: Vec<HashHuntHitView>,
+}
+
+// ---------- analyst surface (M5) ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrevalenceView {
+    pub host_count: i64,
+    pub path_count: i64,
+    pub first_observed: Option<DateTime<Utc>>,
+    pub last_observed: Option<DateTime<Utc>>,
+}
+
+/// Proof-of-absence attestation: emitted when a blast-radius query matches
+/// nothing. "No match across the complete retained history as of this
+/// watermark" is a first-class evidentiary output.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attestation {
+    pub result: String,
+    pub corpus_watermark: i64,
+    pub artifacts_evaluated: i64,
+    pub evaluated_at: DateTime<Utc>,
+    pub scope: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpinionSetRequest {
+    pub opinion: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub actor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpinionView {
+    pub id: Uuid,
+    pub opinion: String,
+    pub actor: String,
+    pub reason: String,
+    pub created_at: DateTime<Utc>,
+    pub superseded_by: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerCreateRequest {
+    pub name: String,
+    pub condition: String,
+    pub webhook_url: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerView {
+    pub id: Uuid,
+    pub name: String,
+    pub condition: String,
+    pub webhook_url: String,
+    pub enabled: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TriggerCreateResponse {
+    pub trigger: TriggerView,
+    /// Shown once; needed to verify webhook signatures.
+    pub hmac_secret: String,
 }

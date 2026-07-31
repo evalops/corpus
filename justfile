@@ -48,3 +48,7 @@ fixtures:
 # M4 vault bootstrap demo (snapshots, OCI, intel mocks).
 demo-bootstrap:
     bash scripts/demo-bootstrap.sh
+
+# M5 analyst surface demo (prevalence, opinions, triggers, droppers, MCP).
+demo-analyst:
+    bash scripts/demo-analyst.sh

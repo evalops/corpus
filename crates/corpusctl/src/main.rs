@@ -117,6 +117,89 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SimilarityCmd,
     },
+    /// Fleet prevalence for one artifact (hosts, paths, first/last seen).
+    Prevalence { sha256: String },
+    /// Rarity hunting over endpoint artifacts.
+    Search {
+        /// Max distinct hosts an artifact may be seen on.
+        #[arg(long, default_value = "5")]
+        max_hosts: i64,
+        /// Only artifacts observed at/after this time (RFC3339 or 7d/24h/30m).
+        #[arg(long)]
+        since: Option<String>,
+        /// Filter by current opinion (trusted|grayware|vulnerable|malicious|suspicious).
+        #[arg(long)]
+        opinion: Option<String>,
+        #[arg(long, default_value = "100")]
+        limit: i64,
+    },
+    /// Human opinions on artifacts (spec 5.5).
+    Opinion {
+        #[command(subcommand)]
+        cmd: OpinionCmd,
+    },
+    /// Webhook triggers (hunt_match | malicious_verdict | variant_join).
+    Triggers {
+        #[command(subcommand)]
+        cmd: TriggersCmd,
+    },
+    /// Targeted analyst hunts.
+    Hunt {
+        #[command(subcommand)]
+        cmd: HuntCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum OpinionCmd {
+    /// Set an opinion (supersedes the current one, audited).
+    Set {
+        sha256: String,
+        /// trusted | grayware | vulnerable | malicious | suspicious
+        level: String,
+        #[arg(long, default_value = "")]
+        reason: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Current opinion for an artifact.
+    Get { sha256: String },
+    /// Full opinion history (append-only).
+    History { sha256: String },
+}
+
+#[derive(Subcommand)]
+enum TriggersCmd {
+    /// Create a webhook trigger. Secret is shown once if not provided.
+    Create {
+        #[arg(long)]
+        name: String,
+        /// hunt_match | malicious_verdict | variant_join
+        #[arg(long)]
+        condition: String,
+        #[arg(long)]
+        webhook_url: String,
+        #[arg(long)]
+        secret: Option<String>,
+    },
+    List,
+    /// Queue a signed test event for one trigger.
+    Test { trigger_id: Uuid },
+}
+
+#[derive(Subcommand)]
+enum HuntCmd {
+    /// Dropper heuristic: low-prevalence artifacts first-observed near
+    /// (in time, on the same host) a seed artifact or its variant group.
+    /// Lead generator, not a verdict.
+    Droppers {
+        #[arg(long)]
+        sha256: String,
+        #[arg(long, default_value = "3")]
+        max_hosts: i64,
+        #[arg(long, default_value = "24")]
+        window_hours: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -842,6 +925,12 @@ async fn main() -> Result<()> {
                 };
                 let report: BlastRadiusReport =
                     client.send(client.req(reqwest::Method::GET, &path)).await?;
+                if let Some(a) = &report.attestation {
+                    println!(
+                        "NO MATCH: 0 hits across {} artifacts evaluated at corpus watermark {} (scope: {}, evaluated {})",
+                        a.artifacts_evaluated, a.corpus_watermark, a.scope, a.evaluated_at
+                    );
+                }
                 println!("{}", serde_json::to_string_pretty(&report)?);
             }
         },
@@ -866,6 +955,90 @@ async fn main() -> Result<()> {
                     .send(client.req(reqwest::Method::POST, "/api/v1/similarity/backfill"))
                     .await?;
                 println!("analyzed: {}", resp.analyzed);
+            }
+        },
+
+        Cmd::Prevalence { sha256 } => {
+            let p: serde_json::Value = client
+                .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/prevalence")))
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&p)?);
+        }
+
+        Cmd::Search { max_hosts, since, opinion, limit } => {
+            let mut path = format!("/api/v1/search?max_hosts={max_hosts}&limit={limit}");
+            if let Some(s) = &since {
+                path.push_str(&format!("&since={s}"));
+            }
+            if let Some(o) = &opinion {
+                path.push_str(&format!("&opinion={o}"));
+            }
+            let hits: serde_json::Value = client.send(client.req(reqwest::Method::GET, &path)).await?;
+            println!("{}", serde_json::to_string_pretty(&hits)?);
+        }
+
+        Cmd::Opinion { cmd } => match cmd {
+            OpinionCmd::Set { sha256, level, reason, actor } => {
+                let o: serde_json::Value = client
+                    .send(client.req(reqwest::Method::POST, &format!("/api/v1/artifacts/{sha256}/opinion")).json(
+                        &OpinionSetRequest { opinion: level, reason, actor },
+                    ))
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&o)?);
+            }
+            OpinionCmd::Get { sha256 } => {
+                let o: serde_json::Value = client
+                    .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/opinion")))
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&o)?);
+            }
+            OpinionCmd::History { sha256 } => {
+                let o: serde_json::Value = client
+                    .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/opinion/history")))
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&o)?);
+            }
+        },
+
+        Cmd::Triggers { cmd } => match cmd {
+            TriggersCmd::Create { name, condition, webhook_url, secret } => {
+                let resp: TriggerCreateResponse = client
+                    .send(client.req(reqwest::Method::POST, "/api/v1/triggers").json(&TriggerCreateRequest {
+                        name,
+                        condition,
+                        webhook_url,
+                        secret,
+                    }))
+                    .await?;
+                println!("trigger_id: {} condition: {}", resp.trigger.id, resp.trigger.condition);
+                println!("hmac_secret: {}", resp.hmac_secret);
+            }
+            TriggersCmd::List => {
+                let rows: Vec<TriggerView> =
+                    client.send(client.req(reqwest::Method::GET, "/api/v1/triggers")).await?;
+                for r in rows {
+                    println!("{} {} {} enabled={}", r.id, r.name, r.condition, r.enabled);
+                }
+            }
+            TriggersCmd::Test { trigger_id } => {
+                client
+                    .req(reqwest::Method::POST, &format!("/api/v1/triggers/{trigger_id}/test"))
+                    .send()
+                    .await?;
+                println!("test event queued for {trigger_id}");
+            }
+        },
+
+        Cmd::Hunt { cmd } => match cmd {
+            HuntCmd::Droppers { sha256, max_hosts, window_hours } => {
+                let resp: serde_json::Value = client
+                    .send(client.req(reqwest::Method::POST, "/api/v1/hunts/droppers").json(&serde_json::json!({
+                        "sha256": sha256,
+                        "max_hosts": max_hosts,
+                        "window_hours": window_hours,
+                    })))
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&resp)?);
             }
         },
 
