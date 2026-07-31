@@ -342,6 +342,12 @@ mod tests {
             1 << 20,
             1,
             Some(&move || {
+                // The retry after the first detected mutation rewrites
+                // IDENTICAL content; on Windows (~10-15ms timestamp
+                // granularity) that rewrite is only detectable if it
+                // crosses an mtime tick, so cross it.
+                #[cfg(windows)]
+                std::thread::sleep(std::time::Duration::from_millis(30));
                 std::fs::write(&t2, b"short but now much longer").unwrap();
             }),
             None,
