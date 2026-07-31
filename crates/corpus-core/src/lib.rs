@@ -12,6 +12,8 @@ pub mod error;
 pub mod hash;
 pub mod hunts;
 pub mod ingest;
+pub mod intel;
+pub mod oci;
 pub mod registry;
 pub mod report;
 pub mod rules;

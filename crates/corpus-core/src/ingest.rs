@@ -61,9 +61,13 @@ async fn insert_occurrence<'e>(
 async fn insert_capture_attempt<'e>(
     tx: &mut sqlx::Transaction<'e, sqlx::Postgres>,
     tenant_id: Uuid,
-    occ: &OccurrenceInfo,
+    host_name: &str,
+    agent_id: Uuid,
+    observed_at: chrono::DateTime<Utc>,
+    capture_reason: &str,
     outcome: &str,
     sha256: Option<&[u8]>,
+    path: Option<&str>,
     detail_code: Option<&str>,
     detail: serde_json::Value,
 ) -> Result<()> {
@@ -75,18 +79,34 @@ async fn insert_capture_attempt<'e>(
     )
     .bind(Uuid::new_v4())
     .bind(tenant_id)
-    .bind(&occ.host_name)
-    .bind(occ.agent_id)
-    .bind(occ.observed_at)
-    .bind(&occ.capture_reason)
+    .bind(host_name)
+    .bind(agent_id)
+    .bind(observed_at)
+    .bind(capture_reason)
     .bind(outcome)
     .bind(sha256)
-    .bind(&occ.path)
+    .bind(path)
     .bind(detail_code)
     .bind(detail)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// Host/agent/reason triple for capture-attempt bookkeeping, derived from
+/// the occurrence when present, else from intel provenance.
+fn attempt_meta<'a>(occ: Option<&'a OccurrenceInfo>, provenance: Option<&'a serde_json::Value>) -> (String, Uuid, chrono::DateTime<Utc>, String, Option<&'a str>) {
+    match occ {
+        Some(o) => (o.host_name.clone(), o.agent_id, o.observed_at, o.capture_reason.clone(), Some(o.path.as_str())),
+        None => {
+            let source = provenance
+                .and_then(|p| p.get("source").and_then(|s| s.as_str()))
+                .unwrap_or("intel-import")
+                .to_string();
+            let path = provenance.and_then(|p| p.get("path").and_then(|s| s.as_str()));
+            (source, Uuid::nil(), Utc::now(), "intel_import".to_string(), path)
+        }
+    }
 }
 
 /// Phase 1: dedup check scoped to the tenant. A dedup hit still records the
@@ -105,22 +125,29 @@ pub async fn announce(pool: &PgPool, tenant_id: Uuid, req: &AnnounceRequest) -> 
 
     if let Some((artifact_id,)) = existing {
         let mut tx = pool.begin().await?;
-        insert_occurrence(
-            &mut tx,
-            OccurrenceInsert {
-                tenant_id,
-                artifact_id: Some(artifact_id),
-                artifact_sha256: Some(&sha_raw),
-                occ: &req.occurrence,
-            },
-        )
-        .await?;
+        if let Some(occ) = &req.occurrence {
+            insert_occurrence(
+                &mut tx,
+                OccurrenceInsert {
+                    tenant_id,
+                    artifact_id: Some(artifact_id),
+                    artifact_sha256: Some(&sha_raw),
+                    occ,
+                },
+            )
+            .await?;
+        }
+        let (host, agent, observed, reason, path) = attempt_meta(req.occurrence.as_ref(), None);
         insert_capture_attempt(
             &mut tx,
             tenant_id,
-            &req.occurrence,
+            &host,
+            agent,
+            observed,
+            &reason,
             OUTCOME_ALREADY_PRESENT,
             Some(&sha_raw),
+            path,
             None,
             serde_json::json!({}),
         )
@@ -206,13 +233,18 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
             // Record the coverage gap against the *announced* (untrusted) hash;
             // the recomputed bytes are never committed.
             let announced_raw = hash::hex_to_raw(&req.sha256).unwrap_or_default();
+            let (host, agent, observed, reason, path) = attempt_meta(req.occurrence.as_ref(), req.provenance.as_ref());
             let mut tx = pool.begin().await?;
             insert_capture_attempt(
                 &mut tx,
                 tenant_id,
-                &req.occurrence,
+                &host,
+                agent,
+                observed,
+                &reason,
                 OUTCOME_HASH_MISMATCH,
                 Some(&announced_raw),
+                path,
                 Some("SHA256_MISMATCH"),
                 serde_json::json!({"announced": req.sha256, "recomputed": recomputed}),
             )
@@ -230,14 +262,20 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
 
     let sha_hex = hex::encode(&sha_raw);
     let artifact_class = classify::classify(&bytes);
+    let scope = req.scope.as_deref().unwrap_or("endpoint");
+    if !matches!(scope, "endpoint" | "intel") {
+        cas.discard_staging(&staging_key);
+        return Err(Error::BadRequest(format!("invalid artifact scope {scope:?}")));
+    }
+    let provenance = req.provenance.clone().unwrap_or_else(|| serde_json::json!({}));
     let object_key = FsCas::object_key(tenant_id, &sha_hex);
     cas.commit(&staging_key, &object_key)?;
 
     let mut tx = pool.begin().await?;
     let artifact_id: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO artifact
-         (id, tenant_id, sha256, size_bytes, artifact_class, storage_state, object_key, first_committed_at)
-         VALUES ($1,$2,$3,$4,$5,'committed',$6,$7)
+         (id, tenant_id, sha256, size_bytes, artifact_class, storage_state, object_key, first_committed_at, scope, provenance)
+         VALUES ($1,$2,$3,$4,$5,'committed',$6,$7,$8,$9)
          ON CONFLICT (tenant_id, sha256) DO NOTHING
          RETURNING id",
     )
@@ -248,6 +286,8 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
     .bind(artifact_class.as_str())
     .bind(&object_key)
     .bind(Utc::now())
+    .bind(scope)
+    .bind(&provenance)
     .fetch_optional(&mut *tx)
     .await?;
     // Lost an insert race: adopt the existing row.
@@ -260,22 +300,29 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
             .await?,
     };
 
-    insert_occurrence(
-        &mut tx,
-        OccurrenceInsert {
-            tenant_id,
-            artifact_id: Some(artifact_id),
-            artifact_sha256: Some(&sha_raw),
-            occ: &req.occurrence,
-        },
-    )
-    .await?;
+    if let Some(occ) = &req.occurrence {
+        insert_occurrence(
+            &mut tx,
+            OccurrenceInsert {
+                tenant_id,
+                artifact_id: Some(artifact_id),
+                artifact_sha256: Some(&sha_raw),
+                occ,
+            },
+        )
+        .await?;
+    }
+    let (host, agent, observed, reason, path) = attempt_meta(req.occurrence.as_ref(), req.provenance.as_ref());
     insert_capture_attempt(
         &mut tx,
         tenant_id,
-        &req.occurrence,
+        &host,
+        agent,
+        observed,
+        &reason,
         OUTCOME_CAPTURED,
         Some(&sha_raw),
+        path,
         None,
         serde_json::json!({"artifact_class": artifact_class.as_str()}),
     )

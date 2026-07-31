@@ -45,7 +45,7 @@ endpoint (Linux)                     control plane
 Prereqs: Rust, Docker, `just` (optional), `cc` (fixtures only).
 
 ```sh
-docker compose up -d postgres     # PostgreSQL 16 on :5433
+docker compose up -d postgres     # PostgreSQL 16 on :5434
 cargo run -p corpus-server        # migrates, serves 127.0.0.1:8080
 ```
 
@@ -98,6 +98,48 @@ Multi-tenancy is first-class:
 AuthN/AuthZ beyond the tenant header and agent bearer tokens (API keys,
 RBAC) is later scope. The header is a trust boundary only inside a private
 network / local dev.
+
+## Bootstrapping your vault (M4)
+
+Cold-start importers so hunts and variant discovery have value on day one:
+
+- **Snapshot backfill** — mount ZFS/btrfs/VSS/Time-Machine snapshots
+  oldest-to-newest and backfill each with its real observation time.
+  `received_at` stays truthful (receipt time); only `observed_at` is
+  backdated, with `capture_reason=historical_backfill`, so backfill never
+  rewrites live-agent history — first/last-observed ranges emerge across
+  snapshots, and dedup makes repeat imports nearly free.
+
+  ```sh
+  corpusctl backfill --root /mnt/snap-2024-01 --observed-at 2024-01-15T08:00:00Z --host prod-web-1
+  corpusctl backfill --snapshot-times-file times.txt --host prod-web-1
+  # times.txt: one "<snapshot-dir> <rfc3339>" per line, processed oldest first
+  ```
+
+- **OCI images** — pull image history from any OCI registry (anonymous
+  token flow; `CORPUS_OCI_USERNAME`/`CORPUS_OCI_PASSWORD` for private
+  repos) or `docker save` output. Only code-bearing files (executables,
+  libraries, scripts) are committed; each carries image/layer digests in
+  `artifact.provenance`, and occurrences name the image ref as host.
+  Importing a repo's tag history backfills versioned executable history.
+
+  ```sh
+  corpusctl import-oci alpine:3.20
+  corpusctl import-oci --from-tar ./saved-image.tar
+  ```
+
+- **Intel connectors** — `corpusctl intel taxii --url <server>
+  --collection <id> [--auto-hunt]` polls STIX 2.1 indicators
+  (`CORPUS_TAXII_API_KEY` optional), stores them, and can exact-hash-hunt
+  them against endpoint-scope artifacts. `corpusctl intel malwarebazaar
+  --limit N` pulls recent MalwareBazaar samples as **intel-scope**
+  artifacts (`scope='intel'`, no host occurrences, excluded from default
+  hunts and occurrence views).
+
+  > **Live malware warning**: MalwareBazaar samples are real, live
+  > malware. They are stored in the CAS so hunts and similarity can
+  > compare your corpus against them. Never execute them; sample access
+  > is restricted-scope; the CLI prints this warning on every import.
 
 ## Design invariants honored so far
 
@@ -171,7 +213,7 @@ network / local dev.
 ```sh
 cargo test --workspace                                # unit tests, hermetic
 cargo clippy --all-targets                            # expected: 0 warnings
-CORPUS_TEST_DATABASE_URL=postgres://corpus:corpus@127.0.0.1:5433/corpus \
+CORPUS_TEST_DATABASE_URL=postgres://corpus:corpus@127.0.0.1:5434/corpus \
     cargo test -p corpus-core                         # +2 real-DB integration tests
 ```
 

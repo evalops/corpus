@@ -104,6 +104,7 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
             path: Some("/watch/big.bin".into()),
             detail_code: None,
             detail: Some(serde_json::json!({"size_bytes": 999})),
+            host_name: None,
         }],
     )
     .await
@@ -123,7 +124,7 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     let ann1 = ingest::announce(&pool, tenant, &AnnounceRequest {
         sha256: sha.clone(),
         size_bytes: bytes.len() as i64,
-        occurrence: occ("itest-host", resp.agent_id, boot, 1, "/watch/a.bin", bytes.len() as i64),
+        occurrence: Some(occ("itest-host", resp.agent_id, boot, 1, "/watch/a.bin", bytes.len() as i64)),
     })
     .await
     .unwrap();
@@ -134,7 +135,9 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
         upload_id,
         sha256: sha.clone(),
         size_bytes: bytes.len() as i64,
-        occurrence: occ("itest-host", resp.agent_id, boot, 2, "/watch/a.bin", bytes.len() as i64),
+        occurrence: Some(occ("itest-host", resp.agent_id, boot, 2, "/watch/a.bin", bytes.len() as i64)),
+        scope: None,
+        provenance: None,
     })
     .await
     .unwrap();
@@ -143,7 +146,7 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     let ann2 = ingest::announce(&pool, tenant, &AnnounceRequest {
         sha256: sha.clone(),
         size_bytes: bytes.len() as i64,
-        occurrence: occ("itest-host", resp.agent_id, boot, 3, "/watch/copy.bin", bytes.len() as i64),
+        occurrence: Some(occ("itest-host", resp.agent_id, boot, 3, "/watch/copy.bin", bytes.len() as i64)),
     })
     .await
     .unwrap();

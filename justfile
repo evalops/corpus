@@ -40,3 +40,7 @@ demo-agent:
 # Generate demo fixtures without running the demo.
 fixtures:
     bash scripts/gen-testdata.sh testdata
+
+# M4 vault bootstrap demo (snapshots, OCI, intel mocks).
+demo-bootstrap:
+    bash scripts/demo-bootstrap.sh

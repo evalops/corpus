@@ -40,7 +40,9 @@ pub struct OccurrenceInfo {
 pub struct AnnounceRequest {
     pub sha256: String,
     pub size_bytes: i64,
-    pub occurrence: OccurrenceInfo,
+    /// None for intel-scope imports, which carry no host occurrences.
+    #[serde(default)]
+    pub occurrence: Option<OccurrenceInfo>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +68,15 @@ pub struct FinalizeRequest {
     pub upload_id: Uuid,
     pub sha256: String,
     pub size_bytes: i64,
-    pub occurrence: OccurrenceInfo,
+    /// None for intel-scope imports, which carry no host occurrences.
+    #[serde(default)]
+    pub occurrence: Option<OccurrenceInfo>,
+    /// 'endpoint' (default) | 'intel'. See migrations/0004.
+    #[serde(default)]
+    pub scope: Option<String>,
+    /// Queryable provenance: OCI image digests, intel source, etc.
+    #[serde(default)]
+    pub provenance: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +202,10 @@ pub struct GapEvent {
     pub path: Option<String>,
     pub detail_code: Option<String>,
     pub detail: Option<serde_json::Value>,
+    /// Only used on the unauthenticated dev path (agent heartbeats take the
+    /// host from the authenticated identity).
+    #[serde(default)]
+    pub host_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,4 +285,43 @@ pub struct BlastRadiusReport {
     /// M0 reports historical observation only; no current-state
     /// verification task exists yet (spec 17.2 is later scope).
     pub verification_state: String,
+}
+
+// ---------- intel (M4 vault bootstrap) ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndicatorInput {
+    pub ioc_type: String,
+    pub value: String,
+    #[serde(default)]
+    pub raw: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndicatorsUpsertRequest {
+    pub source: String,
+    pub indicators: Vec<IndicatorInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndicatorsUpsertResponse {
+    pub upserted: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HashHuntRequest {
+    pub hashes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HashHuntHitView {
+    pub value: String,
+    pub artifact_id: Uuid,
+    pub artifact_sha256: String,
+    pub first_committed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HashHuntResponse {
+    pub hits: Vec<HashHuntHitView>,
 }

@@ -106,7 +106,7 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
         .json(&AnnounceRequest {
             sha256: sha.clone(),
             size_bytes: bytes.len() as i64,
-            occurrence: occ(forged_id, 1, "/w/a", bytes.len() as i64),
+            occurrence: Some(occ(forged_id, 1, "/w/a", bytes.len() as i64)),
         })
         .send()
         .await
@@ -121,7 +121,7 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
         .json(&AnnounceRequest {
             sha256: sha.clone(),
             size_bytes: bytes.len() as i64,
-            occurrence: occ(forged_id, 1, "/w/a", bytes.len() as i64),
+            occurrence: Some(occ(forged_id, 1, "/w/a", bytes.len() as i64)),
         })
         .send()
         .await
@@ -145,7 +145,9 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
             upload_id,
             sha256: sha.clone(),
             size_bytes: bytes.len() as i64,
-            occurrence: occ(forged_id, 2, "/w/a", bytes.len() as i64),
+            occurrence: Some(occ(forged_id, 2, "/w/a", bytes.len() as i64)),
+            scope: None,
+            provenance: None,
         })
         .send()
         .await
@@ -175,7 +177,7 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
         .json(&AnnounceRequest {
             sha256: dev_sha,
             size_bytes: dev_bytes.len() as i64,
-            occurrence: occ(Uuid::new_v4(), 1, "/w/dev", dev_bytes.len() as i64),
+            occurrence: Some(occ(Uuid::new_v4(), 1, "/w/dev", dev_bytes.len() as i64)),
         })
         .send()
         .await

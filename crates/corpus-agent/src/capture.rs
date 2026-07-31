@@ -157,7 +157,7 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
         let seq = db.next_sequence()?;
         let ann = rt
             .uploader
-            .announce(&AnnounceRequest { sha256: sha256.clone(), size_bytes: size, occurrence: occ(seq) })
+            .announce(&AnnounceRequest { sha256: sha256.clone(), size_bytes: size, occurrence: Some(occ(seq)) })
             .await;
         let ann = match ann {
             Ok(a) => a,
@@ -202,7 +202,9 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                         upload_id,
                         sha256: sha256.clone(),
                         size_bytes: size,
-                        occurrence: occ(seq),
+                        occurrence: Some(occ(seq)),
+                        scope: None,
+                        provenance: None,
                     })
                     .await;
                 match fin {

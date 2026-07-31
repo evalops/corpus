@@ -39,6 +39,23 @@ enum Cmd {
         #[arg(long, default_value = "cli_import")]
         capture_reason: String,
     },
+    /// Snapshot backfill: import a mounted snapshot with an explicit
+    /// (backdated) observed_at. received_at stays truthful.
+    /// Run oldest-to-newest across snapshots; dedup makes repeats free.
+    Backfill {
+        /// Snapshot root to import.
+        #[arg(long)]
+        root: Option<String>,
+        /// When this snapshot was taken (RFC3339). Required with --root.
+        #[arg(long)]
+        observed_at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Host label for occurrences (the snapshotted machine).
+        #[arg(long, default_value = "snapshot-host")]
+        host: String,
+        /// File with one "<dir> <rfc3339>" per line; processed oldest first.
+        #[arg(long)]
+        snapshot_times_file: Option<String>,
+    },
     /// Rule registry operations.
     Rules {
         #[command(subcommand)]
@@ -73,6 +90,46 @@ enum Cmd {
     Coverage {
         #[command(subcommand)]
         cmd: CoverageCmd,
+    },
+    /// OCI image ingestion: walk an image's layers via the registry HTTP
+    /// API (no docker needed) or a `docker save` tar, and commit
+    /// code-bearing files with image provenance.
+    ImportOci {
+        /// e.g. alpine:3.20 or ghcr.io/org/img:1.0. Omit with --from-tar.
+        image_ref: Option<String>,
+        /// Offline path: `docker save` output tar.
+        #[arg(long)]
+        from_tar: Option<String>,
+        #[arg(long, default_value = "268435456")]
+        max_artifact_bytes: u64,
+    },
+    /// Intel-corpus connectors (indicators, intel-scope samples).
+    Intel {
+        #[command(subcommand)]
+        cmd: IntelCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum IntelCmd {
+    /// Pull recent samples from MalwareBazaar as intel-scope artifacts.
+    /// These are LIVE MALWARE: they land in the CAS, never execute them.
+    Malwarebazaar {
+        #[arg(long, default_value = "10")]
+        limit: u32,
+        /// API URL override (mock servers in tests/demo).
+        #[arg(long)]
+        url: Option<String>,
+    },
+    /// Poll a TAXII 2.1 collection for hash indicators.
+    Taxii {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        collection: String,
+        /// Also run an exact-hash hunt over endpoint-scope artifacts.
+        #[arg(long)]
+        auto_hunt: bool,
     },
 }
 
@@ -211,8 +268,203 @@ fn hostname() -> String {
         .unwrap_or_else(|| "unknown-host".into())
 }
 
-async fn cmd_import(client: &Client, dir: &str, capture_reason: &str) -> Result<()> {
+/// Announce/upload/finalize one file's bytes. Returns (sha256, outcome).
+async fn commit_bytes(
+    client: &Client,
+    bytes: &[u8],
+    occ: Option<OccurrenceInfo>,
+    scope: Option<&str>,
+    provenance: Option<serde_json::Value>,
+) -> Result<(String, String)> {
+    let sha = hash::sha256_hex(bytes);
+    let ann: AnnounceResponse = client
+        .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/announce").json(&AnnounceRequest {
+            sha256: sha.clone(),
+            size_bytes: bytes.len() as i64,
+            occurrence: occ.clone(),
+        }))
+        .await?;
+    match ann.disposition {
+        AnnounceDisposition::AlreadyPresent => Ok((sha, "already_present".into())),
+        AnnounceDisposition::UploadRequired => {
+            let upload_id = ann.upload_id.context("no upload_id in response")?;
+            let up = client
+                .req(reqwest::Method::PUT, &format!("/api/v1/artifacts/uploads/{upload_id}"))
+                .body(bytes.to_vec())
+                .send()
+                .await?;
+            if !up.status().is_success() {
+                let s = up.status();
+                let body = up.text().await.unwrap_or_default();
+                bail!("upload failed: {s}: {body}");
+            }
+            let _fin: FinalizeResponse = client
+                .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/finalize").json(&FinalizeRequest {
+                    upload_id,
+                    sha256: sha.clone(),
+                    size_bytes: bytes.len() as i64,
+                    occurrence: occ,
+                    scope: scope.map(|s| s.to_string()),
+                    provenance,
+                }))
+                .await?;
+            Ok((sha, "captured".into()))
+        }
+        other => Ok((sha, format!("{other:?}"))),
+    }
+}
+
+async fn report_gap(client: &Client, host: &str, reason: &str, outcome: &str, path: &str, detail: serde_json::Value) -> Result<()> {
+    client
+        .req(reqwest::Method::POST, "/api/v1/agents/gaps")
+        .json(&vec![GapEvent {
+            observed_at: chrono::Utc::now(),
+            capture_reason: reason.to_string(),
+            terminal_outcome: outcome.to_string(),
+            artifact_sha256: None,
+            path: Some(path.to_string()),
+            detail_code: None,
+            detail: Some(detail),
+            host_name: Some(host.to_string()),
+        }])
+        .send()
+        .await?;
+    Ok(())
+}
+
+async fn cmd_import_oci(
+    client: &Client,
+    image_ref: Option<String>,
+    from_tar: Option<String>,
+    max_artifact_bytes: u64,
+) -> Result<()> {
     let host = hostname();
+    let agent_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, format!("corpusctl:{host}").as_bytes());
+    let boot_id = Uuid::new_v4();
+    let mut seq: i64 = 0;
+
+    // (label, image_digest, created, [(layer_digest, entries)])
+    type OciJob = (
+        String,
+        String,
+        Option<chrono::DateTime<chrono::Utc>>,
+        Vec<(String, Vec<corpus_core::oci::LayerEntry>)>,
+    );
+    let mut jobs: Vec<OciJob> = Vec::new();
+
+    match (image_ref, from_tar) {
+        (None, Some(tar_path)) => {
+            let bytes = std::fs::read(&tar_path).with_context(|| format!("reading {tar_path}"))?;
+            let (tags, layers) = corpus_core::oci::walk_docker_save(&bytes)?;
+            let label = tags.first().cloned().unwrap_or_else(|| tar_path.clone());
+            let mut entries = Vec::new();
+            for layer in &layers {
+                let digest = format!("sha256:{}", hash::sha256_hex(layer));
+                let files = corpus_core::oci::walk_layer(layer, false, max_artifact_bytes)?;
+                entries.push((digest, files));
+            }
+            jobs.push((label, "docker-save".into(), None, entries));
+        }
+        (Some(image_ref), None) => {
+            let iref = corpus_core::oci::parse_image_ref(&image_ref)?;
+            let creds = match (std::env::var("CORPUS_OCI_USERNAME"), std::env::var("CORPUS_OCI_PASSWORD")) {
+                (Ok(u), Ok(p)) => Some((u, p)),
+                _ => None,
+            };
+            let reg = corpus_core::oci::RegistryClient::connect(&iref, creds).await?;
+            let resolved = reg.resolve(&iref).await?;
+            println!(
+                "resolved {} -> {} ({} layers)",
+                image_ref,
+                resolved.image_digest,
+                resolved.layers.len()
+            );
+            let mut entries = Vec::new();
+            for digest in &resolved.layers {
+                let layer = reg.layer_bytes(&iref, digest).await?;
+                let files = corpus_core::oci::walk_layer(&layer, true, max_artifact_bytes)?;
+                entries.push((digest.clone(), files));
+            }
+            jobs.push((image_ref, resolved.image_digest, resolved.created, entries));
+        }
+        _ => bail!("provide exactly one of <image-ref> or --from-tar <path>"),
+    }
+
+    let mut captured = 0usize;
+    let mut dedup = 0usize;
+    let mut too_large = 0usize;
+    let mut skipped = 0usize;
+    for (label, image_digest, created, layers) in &jobs {
+        for (layer_digest, files) in layers {
+            for f in files {
+                seq += 1;
+                let path = f.path.clone();
+                let Some(bytes) = &f.bytes else {
+                    too_large += 1;
+                    report_gap(
+                        client,
+                        label,
+                        "oci_image",
+                        "TOO_LARGE",
+                        &path,
+                        serde_json::json!({"size_bytes": f.size, "layer_digest": layer_digest}),
+                    )
+                    .await?;
+                    println!("TOO_LARGE {} ({} bytes) layer {}", path, f.size, layer_digest);
+                    continue;
+                };
+                // Code-bearing artifacts only (spec 2.3): executables,
+                // libraries, scripts. Docs/config are not corpus content.
+                let class = corpus_core::classify::classify(bytes);
+                if class == corpus_core::classify::ArtifactClass::Unknown {
+                    skipped += 1;
+                    continue;
+                }
+                let occ = OccurrenceInfo {
+                    host_name: label.clone(),
+                    agent_id,
+                    boot_id,
+                    agent_sequence: seq,
+                    path: path.clone(),
+                    observed_at: created.unwrap_or_else(chrono::Utc::now),
+                    file_size: bytes.len() as i64,
+                    file_mtime: None,
+                    capture_reason: "oci_image".into(),
+                };
+                let prov = corpus_core::oci::file_provenance(label, image_digest, layer_digest, &path);
+                let (sha, outcome) = commit_bytes(client, bytes, Some(occ), None, Some(prov)).await?;
+                if outcome == "captured" {
+                    captured += 1;
+                } else {
+                    dedup += 1;
+                }
+                println!("{outcome} {sha} {path}");
+            }
+        }
+    }
+    println!("oci import complete: {captured} captured, {dedup} already present, {too_large} too large, {skipped} non-code skipped");
+    Ok(())
+}
+
+/// Options for one import/backfill pass over a directory.
+struct ImportOptions {
+    capture_reason: String,
+    host: Option<String>,
+    /// Explicit observed_at (snapshot backfill); None = now.
+    observed_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+async fn cmd_import(client: &Client, dir: &str, capture_reason: &str) -> Result<()> {
+    import_dir(client, dir, &ImportOptions {
+        capture_reason: capture_reason.to_string(),
+        host: None,
+        observed_at: None,
+    })
+    .await
+}
+
+async fn import_dir(client: &Client, dir: &str, opts: &ImportOptions) -> Result<()> {
+    let host = opts.host.clone().unwrap_or_else(hostname);
     // M0: agent identity is the importing host. Stable per host, fresh boot
     // id per import run; sequence numbers order the run's events (spec 12.4).
     let agent_id = Uuid::new_v5(&Uuid::NAMESPACE_DNS, format!("corpusctl:{host}").as_bytes());
@@ -252,17 +504,17 @@ async fn cmd_import(client: &Client, dir: &str, capture_reason: &str) -> Result<
             boot_id,
             agent_sequence: seq,
             path: path.display().to_string(),
-            observed_at: chrono::Utc::now(),
+            observed_at: opts.observed_at.unwrap_or_else(chrono::Utc::now),
             file_size: bytes.len() as i64,
             file_mtime: mtime,
-            capture_reason: capture_reason.to_string(),
+            capture_reason: opts.capture_reason.clone(),
         };
 
         let announce: AnnounceResponse = client
             .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/announce").json(&AnnounceRequest {
                 sha256: sha.clone(),
                 size_bytes: bytes.len() as i64,
-                occurrence: occ.clone(),
+                occurrence: Some(occ.clone()),
             }))
             .await?;
 
@@ -293,7 +545,9 @@ async fn cmd_import(client: &Client, dir: &str, capture_reason: &str) -> Result<
                         upload_id,
                         sha256: sha.clone(),
                         size_bytes: bytes.len() as i64,
-                        occurrence: occ,
+                        occurrence: Some(occ),
+                        scope: None,
+                        provenance: None,
                     }))
                     .await?;
                 let fwd = if fin.forward_matches.is_empty() {
@@ -377,6 +631,112 @@ async fn main() -> Result<()> {
         },
 
         Cmd::Import { dir, capture_reason } => cmd_import(&client, &dir, &capture_reason).await?,
+
+        Cmd::ImportOci { image_ref, from_tar, max_artifact_bytes } => {
+            cmd_import_oci(&client, image_ref, from_tar, max_artifact_bytes).await?;
+        }
+
+        Cmd::Intel { cmd } => match cmd {
+            IntelCmd::Malwarebazaar { limit, url } => {
+                let api = url.unwrap_or_else(|| corpus_core::intel::MB_API_URL.to_string());
+                eprintln!("WARNING: MalwareBazaar samples are LIVE MALWARE. They are committed to the CAS with scope=intel and must never be executed.");
+                let hashes = corpus_core::intel::mb_recent_hashes(&api, limit).await?;
+                println!("{} samples listed", hashes.len());
+                let mut imported = 0usize;
+                for sha in &hashes {
+                    let zip = corpus_core::intel::mb_fetch_zip(&api, sha).await?;
+                    for (name, bytes) in corpus_core::intel::mb_unzip(&zip)? {
+                        let prov = serde_json::json!({
+                            "source": "malwarebazaar", "sample_sha256": sha, "name": name,
+                        });
+                        let (got_sha, outcome) =
+                            commit_bytes(&client, &bytes, None, Some("intel"), Some(prov)).await?;
+                        println!("{outcome} {got_sha} {name} (malwarebazaar, intel-scope)");
+                        imported += 1;
+                    }
+                }
+                println!("malwarebazaar import complete: {imported} files, scope=intel, no host occurrences");
+            }
+            IntelCmd::Taxii { url, collection, auto_hunt } => {
+                let api_key = std::env::var("CORPUS_TAXII_API_KEY").ok();
+                let bundle = corpus_core::intel::fetch_taxii_indicators(&url, &collection, api_key.as_deref()).await?;
+                let iocs = corpus_core::intel::extract_hash_iocs(&bundle);
+                println!("{} hash indicators extracted", iocs.len());
+                let source = format!("taxii:{url}/{collection}");
+                let resp: IndicatorsUpsertResponse = client
+                    .send(client.req(reqwest::Method::POST, "/api/v1/intel/indicators").json(&IndicatorsUpsertRequest {
+                        source: source.clone(),
+                        indicators: iocs
+                            .iter()
+                            .map(|i| IndicatorInput {
+                                ioc_type: i.ioc_type.clone(),
+                                value: i.value.clone(),
+                                raw: Some(i.raw.clone()),
+                            })
+                            .collect(),
+                    }))
+                    .await?;
+                println!("upserted {} indicators (source {source})", resp.upserted);
+                if auto_hunt {
+                    let hashes: Vec<String> = iocs
+                        .iter()
+                        .filter(|i| i.ioc_type == "sha256")
+                        .map(|i| i.value.clone())
+                        .collect();
+                    let hunt: HashHuntResponse = client
+                        .send(client.req(reqwest::Method::POST, "/api/v1/intel/hash-hunt").json(&HashHuntRequest {
+                            hashes: hashes.clone(),
+                        }))
+                        .await?;
+                    println!("hash hunt over endpoint-scope artifacts: {} hashes queried, {} hits", hashes.len(), hunt.hits.len());
+                    for hit in hunt.hits {
+                        println!("HIT {} artifact {} committed {}", hit.value, hit.artifact_id, hit.first_committed_at);
+                    }
+                }
+            }
+        },
+
+        Cmd::Backfill { root, observed_at, host, snapshot_times_file } => {
+            match (root, observed_at, snapshot_times_file) {
+                (Some(root), Some(ts), None) => {
+                    println!("backfilling {root} as of {ts} (host {host})");
+                    import_dir(&client, &root, &ImportOptions {
+                        capture_reason: "historical_backfill".into(),
+                        host: Some(host),
+                        observed_at: Some(ts),
+                    })
+                    .await?;
+                }
+                (None, None, Some(file)) => {
+                    let text = std::fs::read_to_string(&file)
+                        .with_context(|| format!("reading {file}"))?;
+                    let mut entries: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
+                    for (lineno, line) in text.lines().enumerate() {
+                        let line = line.trim();
+                        if line.is_empty() || line.starts_with('#') {
+                            continue;
+                        }
+                        let (dir, ts) = line.rsplit_once(char::is_whitespace)
+                            .with_context(|| format!("line {}: expected '<dir> <rfc3339>'", lineno + 1))?;
+                        let ts = chrono::DateTime::parse_from_rfc3339(ts)
+                            .with_context(|| format!("line {}: bad rfc3339 {ts:?}", lineno + 1))?
+                            .with_timezone(&chrono::Utc);
+                        entries.push((ts, dir.trim().to_string()));
+                    }
+                    entries.sort_by_key(|(ts, _)| *ts);
+                    for (ts, dir) in entries {
+                        println!("backfilling {dir} as of {ts} (host {host})");
+                        import_dir(&client, &dir, &ImportOptions {
+                            capture_reason: "historical_backfill".into(),
+                            host: Some(host.clone()),
+                            observed_at: Some(ts),
+                        })
+                        .await?;
+                    }
+                }
+                _ => bail!("use either --root <dir> --observed-at <ts> or --snapshot-times-file <file>"),
+            }
+        }
 
         Cmd::Rules { cmd } => match cmd {
             RulesCmd::Add { file } => {
