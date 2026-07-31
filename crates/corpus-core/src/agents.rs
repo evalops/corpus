@@ -132,6 +132,26 @@ pub async fn heartbeat(pool: &PgPool, ident: &AgentIdentity, hb: &HeartbeatReque
 
 /// Persist a batch of coverage-gap capture attempts (spec 2.2 taxonomy).
 pub async fn record_gaps(pool: &PgPool, ident: &AgentIdentity, gaps: &[GapEvent]) -> Result<usize> {
+    record_gaps_scoped(pool, ident.tenant_id, &ident.host_name, ident.agent_id, gaps).await
+}
+
+/// Dev-path gap reporting (no bearer, e.g. corpusctl OCI importer): host
+/// comes from the event, agent identity is nil.
+pub async fn record_gaps_dev(pool: &PgPool, tenant_id: Uuid, gaps: &[GapEvent]) -> Result<usize> {
+    let host = gaps
+        .first()
+        .and_then(|g| g.host_name.clone())
+        .unwrap_or_else(|| "corpusctl".into());
+    record_gaps_scoped(pool, tenant_id, &host, Uuid::nil(), gaps).await
+}
+
+async fn record_gaps_scoped(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    host_name: &str,
+    agent_id: Uuid,
+    gaps: &[GapEvent],
+) -> Result<usize> {
     let mut tx = pool.begin().await?;
     for g in gaps {
         let sha = match &g.artifact_sha256 {
@@ -148,9 +168,9 @@ pub async fn record_gaps(pool: &PgPool, ident: &AgentIdentity, gaps: &[GapEvent]
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
         )
         .bind(Uuid::new_v4())
-        .bind(ident.tenant_id)
-        .bind(&ident.host_name)
-        .bind(ident.agent_id)
+        .bind(tenant_id)
+        .bind(host_name)
+        .bind(agent_id)
         .bind(g.observed_at)
         .bind(&g.capture_reason)
         .bind(&g.terminal_outcome)

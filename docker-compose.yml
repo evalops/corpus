@@ -6,8 +6,8 @@ services:
       POSTGRES_PASSWORD: corpus
       POSTGRES_DB: corpus
     ports:
-      # 5432 is often taken by a host-native Postgres; use 5433 for the dev stack.
-      - "5433:5432"
+      # 5432 is often taken by a host-native Postgres (and 5433 by other dev stacks); use 5434.
+      - "5434:5432"
     volumes:
       - corpus-pgdata:/var/lib/postgresql/data
     healthcheck:

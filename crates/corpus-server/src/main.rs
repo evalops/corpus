@@ -111,9 +111,11 @@ async fn ingest_auth(st: &AppState, headers: &HeaderMap) -> Result<IngestAuth, A
     Ok(IngestAuth::Dev(resolve_tenant(&st.pool, headers).await?))
 }
 
-fn apply_agent_identity(ident: &corpus_core::agents::AgentIdentity, occ: &mut OccurrenceInfo) {
-    occ.agent_id = ident.agent_id;
-    occ.host_name = ident.host_name.clone();
+fn apply_agent_identity(ident: &corpus_core::agents::AgentIdentity, occ: &mut Option<OccurrenceInfo>) {
+    if let Some(occ) = occ {
+        occ.agent_id = ident.agent_id;
+        occ.host_name = ident.host_name.clone();
+    }
 }
 
 async fn announce(
@@ -327,8 +329,15 @@ async fn report_gaps(
     headers: HeaderMap,
     Json(gaps): Json<Vec<GapEvent>>,
 ) -> Result<StatusCode, AppError> {
-    let ident = corpus_core::agents::authenticate(&st.pool, &bearer_token(&headers)?).await?;
-    corpus_core::agents::record_gaps(&st.pool, &ident, &gaps).await?;
+    // Bearer -> agent identity. No bearer -> dev path (corpusctl importers),
+    // host taken from the event payload.
+    if headers.contains_key("authorization") {
+        let ident = corpus_core::agents::authenticate(&st.pool, &bearer_token(&headers)?).await?;
+        corpus_core::agents::record_gaps(&st.pool, &ident, &gaps).await?;
+    } else {
+        let t = resolve_tenant(&st.pool, &headers).await?;
+        corpus_core::agents::record_gaps_dev(&st.pool, t, &gaps).await?;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -367,6 +376,45 @@ async fn coverage_gaps(
     ))
 }
 
+async fn upsert_indicators(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<IndicatorsUpsertRequest>,
+) -> Result<Json<IndicatorsUpsertResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let indicators: Vec<corpus_core::intel::Indicator> = req
+        .indicators
+        .into_iter()
+        .map(|i| corpus_core::intel::Indicator {
+            ioc_type: i.ioc_type,
+            value: i.value,
+            raw: i.raw.unwrap_or_else(|| serde_json::json!({})),
+        })
+        .collect();
+    let upserted = corpus_core::intel::upsert_indicators(&st.pool, t, &req.source, &indicators).await?;
+    Ok(Json(IndicatorsUpsertResponse { upserted }))
+}
+
+async fn hash_hunt(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<HashHuntRequest>,
+) -> Result<Json<HashHuntResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let hits = corpus_core::intel::hash_hunt(&st.pool, t, &req.hashes).await?;
+    Ok(Json(HashHuntResponse {
+        hits: hits
+            .into_iter()
+            .map(|h| HashHuntHitView {
+                value: h.value,
+                artifact_id: h.artifact_id,
+                artifact_sha256: h.artifact_sha256,
+                first_committed_at: h.first_committed_at,
+            })
+            .collect(),
+    }))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -377,7 +425,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let database_url = std::env::var("DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://corpus:corpus@127.0.0.1:5433/corpus".into());
+        .unwrap_or_else(|_| "postgres://corpus:corpus@127.0.0.1:5434/corpus".into());
     let cas_root = std::env::var("CORPUS_CAS_ROOT").unwrap_or_else(|_| "./data/cas".into());
     let listen = std::env::var("CORPUS_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".into());
 
@@ -413,6 +461,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/agents", get(list_agents))
         .route("/api/v1/agents/{agent_id}", get(agent_status))
         .route("/api/v1/coverage/gaps", get(coverage_gaps))
+        .route("/api/v1/intel/indicators", post(upsert_indicators))
+        .route("/api/v1/intel/hash-hunt", post(hash_hunt))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(AppState { pool, cas: std::sync::Arc::new(cas) });
 

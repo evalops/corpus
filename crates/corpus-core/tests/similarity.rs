@@ -38,7 +38,7 @@ async fn commit(
     let ann = ingest::announce(pool, tenant_id, &AnnounceRequest {
         sha256: sha.clone(),
         size_bytes: bytes.len() as i64,
-        occurrence: occ(agent, boot, seq, path, bytes.len() as i64),
+        occurrence: Some(occ(agent, boot, seq, path, bytes.len() as i64)),
     })
     .await
     .unwrap();
@@ -48,7 +48,9 @@ async fn commit(
         upload_id,
         sha256: sha.clone(),
         size_bytes: bytes.len() as i64,
-        occurrence: occ(agent, boot, seq, path, bytes.len() as i64),
+        occurrence: Some(occ(agent, boot, seq, path, bytes.len() as i64)),
+        scope: None,
+        provenance: None,
     })
     .await
     .unwrap();

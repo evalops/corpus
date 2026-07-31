@@ -52,7 +52,7 @@ async fn import_bytes(
         &AnnounceRequest {
             sha256: sha.clone(),
             size_bytes: bytes.len() as i64,
-            occurrence: o.clone(),
+            occurrence: Some(o.clone()),
         },
     )
     .await
@@ -70,7 +70,9 @@ async fn import_bytes(
                 upload_id,
                 sha256: sha.clone(),
                 size_bytes: bytes.len() as i64,
-                occurrence: o,
+                occurrence: Some(o),
+                scope: None,
+                provenance: None,
             },
         )
         .await
@@ -184,7 +186,7 @@ async fn ingest_hunt_and_blast_radius_end_to_end() {
         &AnnounceRequest {
             sha256: wrong_sha.clone(),
             size_bytes: bad.len() as i64,
-            occurrence: o.clone(),
+            occurrence: Some(o.clone()),
         },
     )
     .await
@@ -201,7 +203,9 @@ async fn ingest_hunt_and_blast_radius_end_to_end() {
             upload_id,
             sha256: wrong_sha.clone(),
             size_bytes: bad.len() as i64,
-            occurrence: o,
+            occurrence: Some(o),
+            scope: None,
+            provenance: None,
         },
     )
     .await

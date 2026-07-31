@@ -246,7 +246,7 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
     };
     let planned: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM artifact
-         WHERE tenant_id = $1 AND storage_state = 'committed' AND seq <= $2",
+         WHERE tenant_id = $1 AND storage_state = 'committed' AND scope = 'endpoint' AND seq <= $2",
     )
     .bind(tenant_id)
     .bind(watermark)
@@ -279,7 +279,7 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
 
     let artifacts: Vec<(Uuid, Vec<u8>, String)> = sqlx::query_as(
         "SELECT id, sha256, object_key FROM artifact
-         WHERE tenant_id = $1 AND storage_state = 'committed' AND seq <= $2
+         WHERE tenant_id = $1 AND storage_state = 'committed' AND scope = 'endpoint' AND seq <= $2
          ORDER BY seq",
     )
     .bind(tenant_id)

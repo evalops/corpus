@@ -6,7 +6,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-export DATABASE_URL="${DATABASE_URL:-postgres://corpus:corpus@127.0.0.1:5433/corpus}"
+export DATABASE_URL="${DATABASE_URL:-postgres://corpus:corpus@127.0.0.1:5434/corpus}"
 export CORPUS_CAS_ROOT="${CORPUS_CAS_ROOT:-./data/cas}"
 export CORPUS_LISTEN="${CORPUS_LISTEN:-127.0.0.1:8080}"
 export CORPUS_SERVER_URL="http://${CORPUS_LISTEN}"

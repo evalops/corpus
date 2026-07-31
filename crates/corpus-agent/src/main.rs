@@ -216,6 +216,7 @@ async fn gap_flusher(rt: Arc<AgentRuntime>) {
                                 path: g.path.clone(),
                                 detail_code: g.detail_code.clone(),
                                 detail: serde_json::from_str(&g.detail).ok(),
+                                host_name: None,
                             });
                             delivered_ids.push(g.id);
                         }
