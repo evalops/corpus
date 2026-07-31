@@ -128,6 +128,9 @@ enum Cmd {
     },
     /// Fleet prevalence for one artifact (hosts, paths, first/last seen).
     Prevalence { sha256: String },
+    /// Submit an artifact to the external sandbox (CAPE). Sample egress —
+    /// requires server-side detonation config and writes an audit event.
+    Detonate { sha256: String },
     /// Rarity hunting over endpoint artifacts.
     Search {
         /// Max distinct hosts an artifact may be seen on.
@@ -1115,6 +1118,31 @@ async fn main() -> Result<()> {
                 ))
                 .await?;
             println!("{}", serde_json::to_string_pretty(&p)?);
+        }
+
+        Cmd::Detonate { sha256 } => {
+            let resp = client
+                .req(
+                    reqwest::Method::POST,
+                    &format!("/api/v1/artifacts/{sha256}/detonate"),
+                )
+                .send()
+                .await?;
+            let status = resp.status();
+            let body = resp.text().await?;
+            if !status.is_success() {
+                bail!("detonation failed: {status}: {body}");
+            }
+            let v: serde_json::Value = serde_json::from_str(&body)?;
+            println!("analysis_run: {}", v["analysis_run_id"]);
+            println!("findings (DYNAMIC_BEHAVIOR): {}", v["finding_count"]);
+            for f in v["findings"].as_array().unwrap_or(&vec![]) {
+                println!(
+                    "  [{}] {}",
+                    f["category"].as_str().unwrap_or("-"),
+                    f["summary"].as_str().unwrap_or("-")
+                );
+            }
         }
 
         Cmd::Search {

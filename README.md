@@ -148,6 +148,27 @@ endpoint (Linux)                     control plane
   [--auto-hunt]`, `corpusctl intel malwarebazaar --limit N` (live
   malware — CAS-only, never execute, scope=intel, no occurrences).
 
+## Detonation (M10)
+
+Dynamic evidence comes from an external sandbox — we orchestrate, the
+sandbox detonates. Static analysis stays the default.
+
+- **Provider interface** (`DetonationProvider` trait): `capabilities()`,
+  `submit(sample) -> job`, `poll(job) -> report`. The manifest declares
+  `sampleBytes: true` (spec 20.6 egress declaration).
+- **CAPEv2 provider** (self-hosted default): REST submit/poll/report.
+  Point the server at your CAPE instance with `CORPUS_CAPE_URL` and
+  `CORPUS_CAPE_TOKEN`. **Sample egress is OFF by default** — set
+  `CORPUS_DETONATION_ENABLED=1` to allow it.
+- **Trigger**: `corpusctl detonate <sha256>` (audited), or the optional
+  auto-submit policy for suspicious/malicious opinions
+  (`CORPUS_DETONATION_AUTO=1`, default OFF).
+- **Evidence**: CAPE signatures and TTPs land as `finding` rows with
+  `evidence_type = DYNAMIC_BEHAVIOR` (spec 17.4 — behavior observed in
+  the sandbox, never re-labeled as static) behind an `analysis_run` with
+  `analyzer_name='cape'` and a pinned adapter version. Blast-radius
+  artifacts surface findings alongside matched rules.
+
 ## Semantic similarity (M8)
 
 Function-level matching in pure Rust — no Ghidra/JVM (spec 16.2/16.5;

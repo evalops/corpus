@@ -145,6 +145,13 @@ async fn build_report(
         let opinion = crate::opinions::current_opinion(pool, tenant_id, a.id)
             .await?
             .map(|o| o.opinion);
+        let findings = sqlx::query_as::<_, crate::dto::FindingView>(
+            "SELECT evidence_type, category, summary FROM finding WHERE tenant_id = $1 AND artifact_id = $2 ORDER BY created_at LIMIT 50",
+        )
+        .bind(tenant_id)
+        .bind(a.id)
+        .fetch_all(pool)
+        .await?;
         artifact_views.push(BlastRadiusArtifact {
             artifact_id: a.id,
             sha256: hex::encode(&a.sha256),
@@ -159,6 +166,7 @@ async fn build_report(
                 last_observed: prev.last_observed,
             }),
             opinion,
+            findings,
         });
     }
 
@@ -281,6 +289,7 @@ async fn expand_variants_for(
                 matched_rules: vec![],
                 prevalence: None,
                 opinion: None,
+                findings: vec![],
             })
             .collect(),
         group_occurrences: group_occurrences

@@ -579,6 +579,50 @@ async fn hash_hunt(
     }))
 }
 
+// ---------- detonation (M10) ----------
+
+async fn detonate_artifact(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let raw = corpus_core::hash::hex_to_raw(&sha256)
+        .map_err(|_| Error::BadRequest("invalid sha256 hex".into()))?;
+    let row: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT id, object_key FROM artifact WHERE tenant_id = $1 AND sha256 = $2 AND storage_state = 'committed'")
+            .bind(t)
+            .bind(&raw)
+            .fetch_optional(&st.pool)
+            .await
+            .map_err(Error::from)?;
+    let (artifact_id, object_key) =
+        row.ok_or_else(|| Error::NotFound(format!("artifact {sha256}")))?;
+    let bytes = st.cas.read(&object_key)?;
+    let cfg = corpus_core::detonate::DetonationConfig::from_env();
+    let provider = match &cfg.cape_url {
+        Some(url) => corpus_core::detonate::CapeProvider::new(url, cfg.cape_token.clone()),
+        None => {
+            return Err(Error::BadRequest(
+                "no detonation provider configured (set CORPUS_CAPE_URL and CORPUS_DETONATION_ENABLED=1)".into(),
+            )
+            .into())
+        }
+    };
+    let result = corpus_core::detonate::detonate(
+        &st.pool,
+        t,
+        artifact_id,
+        &sha256,
+        &bytes,
+        &provider,
+        &cfg,
+        "corpusctl",
+    )
+    .await?;
+    Ok(Json(serde_json::to_value(result).unwrap_or_default()))
+}
+
 // ---------- analyst surface (M5) ----------
 
 async fn artifact_id_for(pool: &PgPool, tenant: Uuid, sha: &str) -> Result<Uuid, AppError> {
@@ -616,6 +660,49 @@ async fn set_opinion(
     let oid =
         corpus_core::opinions::set_opinion(&st.pool, t, id, &req.opinion, &actor, &req.reason)
             .await?;
+    // Optional auto-submit policy (default OFF): suspicious/malicious
+    // verdicts can trigger detonation when explicitly enabled.
+    if matches!(req.opinion.as_str(), "malicious" | "suspicious")
+        && std::env::var("CORPUS_DETONATION_AUTO").is_ok()
+    {
+        let cfg = corpus_core::detonate::DetonationConfig::from_env();
+        if cfg.enabled {
+            if let Some(url) = cfg.cape_url.clone() {
+                let row: Option<(String,)> = sqlx::query_as(
+                    "SELECT object_key FROM artifact WHERE tenant_id = $1 AND id = $2 AND storage_state = 'committed'",
+                )
+                .bind(t)
+                .bind(id)
+                .fetch_optional(&st.pool)
+                .await
+                .map_err(Error::from)?;
+                if let Some((object_key,)) = row {
+                    if let Ok(bytes) = st.cas.read(&object_key) {
+                        let provider =
+                            corpus_core::detonate::CapeProvider::new(&url, cfg.cape_token.clone());
+                        let pool = st.pool.clone();
+                        let sha = sha256.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = corpus_core::detonate::detonate(
+                                &pool,
+                                t,
+                                id,
+                                &sha,
+                                &bytes,
+                                &provider,
+                                &cfg,
+                                "auto-policy",
+                            )
+                            .await
+                            {
+                                tracing::warn!(error = %e, "auto-submit detonation failed");
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
     let current = corpus_core::opinions::current_opinion(&st.pool, t, id)
         .await?
         .ok_or_else(|| Error::NotFound("opinion".into()))?;
@@ -1034,6 +1121,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/hunts/droppers", post(dropper_hunt))
         .route("/api/v1/triggers", post(create_trigger).get(list_triggers))
         .route("/api/v1/triggers/{trigger_id}/test", post(test_trigger))
+        .route(
+            "/api/v1/artifacts/{sha256}/detonate",
+            post(detonate_artifact),
+        )
         .route("/mcp", post(mcp_endpoint))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(AppState {
