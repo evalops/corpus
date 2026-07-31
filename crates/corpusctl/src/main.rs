@@ -74,6 +74,21 @@ enum Cmd {
         #[command(subcommand)]
         cmd: CoverageCmd,
     },
+    /// Show typed similarity edges for an artifact (spec 16.4).
+    Similar { sha256: String },
+    /// Show variant-group members for an artifact (spec 16.6).
+    Variants { sha256: String },
+    /// Similarity maintenance.
+    Similarity {
+        #[command(subcommand)]
+        cmd: SimilarityCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum SimilarityCmd {
+    /// Compute features + edges for artifacts that predate M3a.
+    Backfill,
 }
 
 #[derive(Subcommand)]
@@ -162,6 +177,10 @@ enum ReportCmd {
         hunt: Option<Uuid>,
         #[arg(long)]
         sha256: Option<String>,
+        /// Resolve matched artifacts through variant groups and list weak
+        /// neighbors as leads (spec 17.1 steps 2-3).
+        #[arg(long)]
+        expand_variants: bool,
     },
 }
 
@@ -451,15 +470,42 @@ async fn main() -> Result<()> {
         },
 
         Cmd::Report { cmd } => match cmd {
-            ReportCmd::BlastRadius { hunt, sha256 } => {
+            ReportCmd::BlastRadius { hunt, sha256, expand_variants } => {
                 let path = match (hunt, &sha256) {
-                    (Some(id), None) => format!("/api/v1/reports/blast-radius?hunt_id={id}"),
-                    (None, Some(sha)) => format!("/api/v1/reports/blast-radius?sha256={sha}"),
+                    (Some(id), None) => {
+                        format!("/api/v1/reports/blast-radius?hunt_id={id}&expand_variants={expand_variants}")
+                    }
+                    (None, Some(sha)) => {
+                        format!("/api/v1/reports/blast-radius?sha256={sha}&expand_variants={expand_variants}")
+                    }
                     _ => bail!("provide exactly one of --hunt or --sha256"),
                 };
                 let report: BlastRadiusReport =
                     client.send(client.req(reqwest::Method::GET, &path)).await?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+        },
+
+        Cmd::Similar { sha256 } => {
+            let resp: SimilarResponse = client
+                .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/similar")))
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+        }
+
+        Cmd::Variants { sha256 } => {
+            let resp: VariantsResponse = client
+                .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/variants")))
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&resp)?);
+        }
+
+        Cmd::Similarity { cmd } => match cmd {
+            SimilarityCmd::Backfill => {
+                let resp: BackfillResponse = client
+                    .send(client.req(reqwest::Method::POST, "/api/v1/similarity/backfill"))
+                    .await?;
+                println!("analyzed: {}", resp.analyzed);
             }
         },
 

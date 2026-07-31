@@ -290,6 +290,20 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
     let forward_matches =
         crate::hunts::forward_scan(pool, tenant_id, artifact_id, &sha_raw, &bytes).await?;
 
+    // Similarity analysis (spec 16): extract features, generate edges,
+    // maintain variant groups. Never blocks the commit.
+    if let Err(e) = crate::similarity::edges::analyze_new_artifact(
+        pool,
+        tenant_id,
+        artifact_id,
+        artifact_class.as_str(),
+        &bytes,
+    )
+    .await
+    {
+        tracing::warn!(error = %e, artifact = %artifact_id, "similarity analysis failed");
+    }
+
     Ok(FinalizeResponse {
         artifact_id,
         sha256: sha_hex,

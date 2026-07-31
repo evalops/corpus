@@ -7,3 +7,5 @@
 Cargo.lock.bak
 .DS_Store
 /agent-demo
+/demo-sim
+/.demo-similarity-server.log
