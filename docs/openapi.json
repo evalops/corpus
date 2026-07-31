@@ -1,0 +1,196 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Corpus API",
+    "version": "0.1.0",
+    "description": "Longitudinal executable corpus and retro-hunt control plane. Admin routes require Authorization: Bearer when CORPUS_ADMIN_TOKEN is set or the server binds non-loopback. Agent traffic uses mTLS on CORPUS_AGENT_LISTEN."
+  },
+  "servers": [{ "url": "http://127.0.0.1:8080" }],
+  "components": {
+    "securitySchemes": {
+      "adminBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "CORPUS_ADMIN_TOKEN"
+      },
+      "mcpBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "CORPUS_MCP_TOKEN"
+      }
+    },
+    "parameters": {
+      "Tenant": {
+        "name": "X-Corpus-Tenant",
+        "in": "header",
+        "schema": { "type": "string" },
+        "description": "Tenant UUID or slug; defaults to seeded `default`."
+      }
+    }
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "summary": "Liveness",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "engine": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "summary": "This OpenAPI document",
+        "responses": { "200": { "description": "OpenAPI 3.0 JSON" } }
+      }
+    },
+    "/api/v1/tenants": {
+      "get": {
+        "summary": "List tenants",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Tenant list" } }
+      },
+      "post": {
+        "summary": "Create tenant",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "201": { "description": "Created" } }
+      }
+    },
+    "/api/v1/artifacts/announce": {
+      "post": {
+        "summary": "Announce artifact (admin or agent bearer)",
+        "parameters": [{ "$ref": "#/components/parameters/Tenant" }],
+        "responses": { "200": { "description": "Announce response" } }
+      }
+    },
+    "/api/v1/artifacts/uploads/{upload_id}": {
+      "put": {
+        "summary": "Upload staged bytes",
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": { "204": { "description": "Staged" } }
+      }
+    },
+    "/api/v1/artifacts/finalize": {
+      "post": {
+        "summary": "Finalize upload into CAS",
+        "responses": { "200": { "description": "Finalize response" } }
+      }
+    },
+    "/api/v1/rules": {
+      "get": {
+        "summary": "List rules",
+        "security": [{ "adminBearer": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/Tenant" }],
+        "responses": { "200": { "description": "Rules" } }
+      },
+      "post": {
+        "summary": "Create rule",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Rule" } }
+      }
+    },
+    "/api/v1/bundles": {
+      "get": {
+        "summary": "List bundles",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Bundles" } }
+      },
+      "post": {
+        "summary": "Publish immutable bundle",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Bundle" } }
+      }
+    },
+    "/api/v1/hunts": {
+      "get": {
+        "summary": "List hunts",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Hunts" } }
+      },
+      "post": {
+        "summary": "Create DRAFT retro-hunt",
+        "security": [{ "adminBearer": [] }],
+        "responses": { "200": { "description": "Hunt" } }
+      }
+    },
+    "/api/v1/hunts/{hunt_id}/run": {
+      "post": {
+        "summary": "Enqueue hunt (async) or run sync with ?sync=1",
+        "security": [{ "adminBearer": [] }],
+        "parameters": [
+          {
+            "name": "hunt_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          },
+          {
+            "name": "sync",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["1", "true"] }
+          }
+        ],
+        "responses": { "200": { "description": "Hunt (QUEUED or terminal if sync)" } }
+      }
+    },
+    "/api/v1/reports/blast-radius": {
+      "get": {
+        "summary": "Blast-radius report",
+        "security": [{ "adminBearer": [] }],
+        "parameters": [
+          { "name": "hunt_id", "in": "query", "schema": { "type": "string", "format": "uuid" } },
+          { "name": "sha256", "in": "query", "schema": { "type": "string" } },
+          { "name": "expand_variants", "in": "query", "schema": { "type": "boolean" } }
+        ],
+        "responses": { "200": { "description": "Report" } }
+      }
+    },
+    "/api/v1/artifacts/{sha256}/detonate": {
+      "post": {
+        "summary": "Submit sample to external sandbox (egress; off by default)",
+        "security": [{ "adminBearer": [] }],
+        "parameters": [
+          {
+            "name": "sha256",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "Detonation result" } }
+      }
+    },
+    "/api/v1/agents/enroll": {
+      "post": {
+        "summary": "Exchange one-time enrollment token for agent credentials",
+        "responses": { "200": { "description": "Enroll response with client cert" } }
+      }
+    },
+    "/mcp": {
+      "post": {
+        "summary": "Read-only MCP JSON-RPC",
+        "security": [{ "mcpBearer": [] }],
+        "responses": { "200": { "description": "JSON-RPC response" } }
+      }
+    }
+  }
+}

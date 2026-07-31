@@ -33,11 +33,11 @@ serve:
 demo:
     bash scripts/demo.sh
 
-# M1 agent demo (Linux agent in a privileged container, fanotify).
+# Linux agent demo (privileged container, fanotify).
 demo-agent:
     bash scripts/demo-agent.sh
 
-# M3a similarity demo (variants, edges, blast-radius expansion).
+# Similarity demo (variants, edges, blast-radius expansion).
 demo-similarity:
     bash scripts/demo-similarity.sh
 
@@ -45,10 +45,14 @@ demo-similarity:
 fixtures:
     bash scripts/gen-testdata.sh testdata
 
-# M4 vault bootstrap demo (snapshots, OCI, intel mocks).
+# Vault bootstrap demo (snapshots, OCI, intel mocks).
 demo-bootstrap:
     bash scripts/demo-bootstrap.sh
 
-# M5 analyst surface demo (prevalence, opinions, triggers, droppers, MCP).
+# Analyst surface demo (prevalence, opinions, triggers, droppers, MCP).
 demo-analyst:
     bash scripts/demo-analyst.sh
+
+# First-hunt path (import → rule → hunt → report).
+first-hunt:
+    bash scripts/first-hunt.sh

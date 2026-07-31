@@ -64,6 +64,38 @@ impl DetonationConfig {
                 .unwrap_or(60),
         }
     }
+
+    /// Fail closed when egress is enabled but CAPE is misconfigured.
+    pub fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+        let url_ok = self
+            .cape_url
+            .as_ref()
+            .map(|u| !u.is_empty())
+            .unwrap_or(false);
+        if !url_ok {
+            return Err(Error::BadRequest(
+                "CORPUS_DETONATION_ENABLED=1 requires CORPUS_CAPE_URL".into(),
+            ));
+        }
+        // Require an auth token for CAPE unless explicitly opted out
+        // (local CAPE with no auth — rare and dangerous on a network).
+        let token_ok = self
+            .cape_token
+            .as_ref()
+            .map(|t| !t.is_empty())
+            .unwrap_or(false);
+        if !token_ok && std::env::var("CORPUS_CAPE_ALLOW_NO_AUTH").is_err() {
+            return Err(Error::BadRequest(
+                "CORPUS_DETONATION_ENABLED=1 requires CORPUS_CAPE_TOKEN \
+                 (or CORPUS_CAPE_ALLOW_NO_AUTH=1 for a local unauthenticated CAPE)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// CAPEv2 provider (self-hosted default).

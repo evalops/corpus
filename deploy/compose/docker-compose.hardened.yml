@@ -1,0 +1,24 @@
+# Hardened single-host sketch. Generate tokens before start:
+#   export CORPUS_ADMIN_TOKEN=$(openssl rand -hex 32)
+#   export CORPUS_MCP_TOKEN=$(openssl rand -hex 32)
+# Bind the published ports only on a trusted network or behind a reverse proxy.
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: corpus
+      POSTGRES_PASSWORD: corpus
+      POSTGRES_DB: corpus
+    volumes:
+      - corpus_pg:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corpus -d corpus"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  corpus_pg:

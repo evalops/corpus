@@ -197,12 +197,11 @@ async fn cache_lookup(pool: &PgPool, key: &ScanCacheKey) -> Result<Option<CacheH
 /// committed artifact at/below it not covered by the scan cache, commit
 /// matches idempotently, and land in COMPLETED or COMPLETED_PARTIAL
 /// (spec 15.1, 15.2). Synchronous for M0.
-///
-/// Once a watermark has been pinned, re-runs reuse it (cache-replay path)
-/// and never expand the planned set to newer commits.
-pub async fn run_hunt(
+/// Enqueue a retro-hunt: validate, plan, pin watermark, leave state
+/// `QUEUED`, and insert a `hunt_job` row. The server worker (or a sync
+/// caller) runs [`execute_hunt`].
+pub async fn enqueue_hunt(
     pool: &PgPool,
-    cas: &FsCas,
     tenant_id: Uuid,
     hunt_id: Uuid,
 ) -> Result<HuntResponse> {
@@ -216,7 +215,10 @@ pub async fn run_hunt(
         return Err(Error::Conflict(format!("hunt {hunt_id} is {}", hunt.state)));
     }
 
-    // VALIDATING: bundle must resolve and compile.
+    if let Some(msg) = crate::sandbox::check_min_tier(crate::sandbox::tier_from_env()) {
+        return Err(Error::BadRequest(msg));
+    }
+
     set_state(pool, tenant_id, hunt_id, "VALIDATING").await?;
     let bundle_row: (Uuid,) =
         sqlx::query_as("SELECT bundle_id FROM hunt WHERE id = $1 AND tenant_id = $2")
@@ -225,25 +227,20 @@ pub async fn run_hunt(
             .fetch_one(pool)
             .await?;
     let sources = registry::bundle_sources(pool, tenant_id, bundle_row.0).await?;
-    let compiled = match scan::compile_bundle(&sources) {
-        Ok(c) => c,
-        Err(e) => {
-            sqlx::query(
-                "UPDATE hunt SET state = 'FAILED', error = $3, completed_at = $4
-                 WHERE id = $1 AND tenant_id = $2",
-            )
-            .bind(hunt_id)
-            .bind(tenant_id)
-            .bind(&e)
-            .bind(Utc::now())
-            .execute(pool)
-            .await?;
-            return Err(Error::RuleCompile(e));
-        }
-    };
+    if let Err(e) = scan::compile_bundle(&sources) {
+        sqlx::query(
+            "UPDATE hunt SET state = 'FAILED', error = $3, completed_at = $4
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(hunt_id)
+        .bind(tenant_id)
+        .bind(&e)
+        .bind(Utc::now())
+        .execute(pool)
+        .await?;
+        return Err(Error::RuleCompile(e));
+    }
 
-    // PLANNED: pin the corpus watermark once (max committed artifact sequence).
-    // Re-runs keep the original pin so the planned set is immutable.
     let watermark = if let Some(w) = hunt.corpus_watermark {
         w
     } else {
@@ -276,9 +273,84 @@ pub async fn run_hunt(
     .execute(pool)
     .await?;
 
-    // QUEUED -> RUNNING (single node: immediate).
-    let tier = crate::sandbox::tier_from_env();
     set_state(pool, tenant_id, hunt_id, "QUEUED").await?;
+    sqlx::query(
+        "INSERT INTO hunt_job (hunt_id, tenant_id, enqueued_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (hunt_id) DO UPDATE
+           SET enqueued_at = EXCLUDED.enqueued_at,
+               claimed_at = NULL, claimed_by = NULL,
+               finished_at = NULL, last_error = NULL",
+    )
+    .bind(hunt_id)
+    .bind(tenant_id)
+    .bind(Utc::now())
+    .execute(pool)
+    .await?;
+
+    get_hunt(pool, tenant_id, hunt_id).await
+}
+
+/// Run a planned/queued hunt to completion (scan loop).
+///
+/// Once a watermark has been pinned, re-runs reuse it (cache-replay path)
+/// and never expand the planned set to newer commits.
+pub async fn execute_hunt(
+    pool: &PgPool,
+    cas: &FsCas,
+    tenant_id: Uuid,
+    hunt_id: Uuid,
+) -> Result<HuntResponse> {
+    let hunt = get_hunt(pool, tenant_id, hunt_id).await?;
+    if hunt.kind != "retro" {
+        return Err(Error::BadRequest(
+            "only retro hunts are run explicitly".into(),
+        ));
+    }
+
+    let bundle_row: (Uuid,) =
+        sqlx::query_as("SELECT bundle_id FROM hunt WHERE id = $1 AND tenant_id = $2")
+            .bind(hunt_id)
+            .bind(tenant_id)
+            .fetch_one(pool)
+            .await?;
+    let sources = registry::bundle_sources(pool, tenant_id, bundle_row.0).await?;
+    let compiled = match scan::compile_bundle(&sources) {
+        Ok(c) => c,
+        Err(e) => {
+            sqlx::query(
+                "UPDATE hunt SET state = 'FAILED', error = $3, completed_at = $4
+                 WHERE id = $1 AND tenant_id = $2",
+            )
+            .bind(hunt_id)
+            .bind(tenant_id)
+            .bind(&e)
+            .bind(Utc::now())
+            .execute(pool)
+            .await?;
+            return Err(Error::RuleCompile(e));
+        }
+    };
+
+    let watermark = hunt.corpus_watermark.ok_or_else(|| {
+        Error::BadRequest("hunt has no corpus_watermark; call enqueue/run first".into())
+    })?;
+
+    let tier = crate::sandbox::tier_from_env();
+    if let Some(msg) = crate::sandbox::check_min_tier(tier) {
+        sqlx::query(
+            "UPDATE hunt SET state = 'FAILED', error = $3, completed_at = $4
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(hunt_id)
+        .bind(tenant_id)
+        .bind(&msg)
+        .bind(Utc::now())
+        .execute(pool)
+        .await?;
+        return Err(Error::BadRequest(msg));
+    }
+
     sqlx::query(
         "UPDATE hunt SET state = 'RUNNING', started_at = COALESCE(started_at, $3)
          WHERE id = $1 AND tenant_id = $2",
@@ -288,6 +360,15 @@ pub async fn run_hunt(
     .bind(Utc::now())
     .execute(pool)
     .await?;
+    sqlx::query(
+        "UPDATE hunt_job SET claimed_at = $2, claimed_by = 'local-worker'
+         WHERE hunt_id = $1",
+    )
+    .bind(hunt_id)
+    .bind(Utc::now())
+    .execute(pool)
+    .await
+    .ok();
 
     let artifacts: Vec<(Uuid, Vec<u8>, String)> = sqlx::query_as(
         "SELECT id, sha256, object_key FROM artifact
@@ -417,8 +498,45 @@ pub async fn run_hunt(
         .bind(Utc::now())
         .execute(pool)
         .await?;
+    sqlx::query("UPDATE hunt_job SET finished_at = $2 WHERE hunt_id = $1")
+        .bind(hunt_id)
+        .bind(Utc::now())
+        .execute(pool)
+        .await
+        .ok();
 
     get_hunt(pool, tenant_id, hunt_id).await
+}
+
+/// Convenience: enqueue then execute in the same task (sync path for tests
+/// and `?sync=1`).
+pub async fn run_hunt(
+    pool: &PgPool,
+    cas: &FsCas,
+    tenant_id: Uuid,
+    hunt_id: Uuid,
+) -> Result<HuntResponse> {
+    enqueue_hunt(pool, tenant_id, hunt_id).await?;
+    execute_hunt(pool, cas, tenant_id, hunt_id).await
+}
+
+/// Claim the next queued hunt job, if any. Returns `(tenant_id, hunt_id)`.
+pub async fn claim_next_job(pool: &PgPool, worker_id: &str) -> Result<Option<(Uuid, Uuid)>> {
+    let row: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "UPDATE hunt_job SET claimed_at = now(), claimed_by = $1
+         WHERE hunt_id = (
+           SELECT hunt_id FROM hunt_job
+           WHERE finished_at IS NULL AND claimed_at IS NULL
+           ORDER BY enqueued_at
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1
+         )
+         RETURNING tenant_id, hunt_id",
+    )
+    .bind(worker_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
 }
 
 /// Forward coverage (spec 15.9): scan newly committed bytes with every
