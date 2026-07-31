@@ -35,7 +35,7 @@ pub mod edge_type {
 pub fn merges_groups(edge_type: &str) -> bool {
     matches!(
         edge_type,
-        edge_type::EXACT_COPY | edge_type::NORMALIZED_EQUIVALENT
+        edge_type::EXACT_COPY | edge_type::NORMALIZED_EQUIVALENT | edge_type::SEMANTIC_STRONG
     )
 }
 
@@ -47,6 +47,7 @@ mod tests {
     fn fuzzy_never_merges_groups() {
         // 28.5: fuzzy hash alone never creates automatic family membership.
         assert!(!merges_groups(edge_type::BYTE_SIMILAR));
+        assert!(merges_groups(edge_type::SEMANTIC_STRONG));
         assert!(!merges_groups(edge_type::SHARED_PROVENANCE));
         assert!(!merges_groups(edge_type::SEMANTIC_WEAK));
         assert!(merges_groups(edge_type::EXACT_COPY));

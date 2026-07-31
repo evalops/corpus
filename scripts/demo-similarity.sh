@@ -120,6 +120,61 @@ $CTL report blast-radius --sha256 "$V2_SHA" --expand-variants
 echo "==> backfill (expect analyzed: 0 -- post-commit already covered everything)"
 $CTL similarity backfill
 
+echo "==> semantic (M8): same source at -O0/-O2/-Os + tweak + unrelated"
+mkdir -p "$DEMO_DIR/semantic"
+cat > "$DEMO_DIR/semantic/base.c" <<'EOF'
+#include <string.h>
+static __attribute__((noinline)) int checksum(const char *s) {
+    int h = 5381;
+    while (*s) { h = h * 33 ^ *s++; }
+    return h;
+}
+static __attribute__((noinline)) int collatz(int n) {
+    int steps = 0;
+    while (n != 1) { n = (n % 2) ? 3 * n + 1 : n / 2; steps++; }
+    return steps;
+}
+static __attribute__((noinline)) unsigned fib(int n) {
+    unsigned a = 0, b = 1;
+    for (int i = 0; i < n; i++) { unsigned t = a + b; a = b; b = t; }
+    return a;
+}
+int main(int argc, char **argv) {
+    return checksum(argv[0]) + collatz(argc + 25) + (int)fib(argc + 11);
+}
+EOF
+sed 's/unsigned a = 0, b = 1;/unsigned a = 1, b = 1;/; s/unsigned t = a + b; a = b; b = t;/unsigned t = a * b + a; a = b; b = t % 97;/' \
+    "$DEMO_DIR/semantic/base.c" > "$DEMO_DIR/semantic/tweak.c"
+TARGET_FLAG=""
+if [ "$(uname)" = "Darwin" ]; then
+    TARGET_FLAG="-target x86_64-apple-macos10.15"
+fi
+cc -O0 $TARGET_FLAG -o "$DEMO_DIR/semantic/base_O0" "$DEMO_DIR/semantic/base.c"
+cc -O2 $TARGET_FLAG -o "$DEMO_DIR/semantic/base_O2" "$DEMO_DIR/semantic/base.c"
+cc -Os $TARGET_FLAG -o "$DEMO_DIR/semantic/base_Os" "$DEMO_DIR/semantic/base.c"
+cc -O2 $TARGET_FLAG -o "$DEMO_DIR/semantic/tweak_O2" "$DEMO_DIR/semantic/tweak.c"
+$CTL import "$DEMO_DIR/semantic" --capture-reason baseline >/dev/null
+
+SEM_O0=$(shasum -a 256 "$DEMO_DIR/semantic/base_O0" | cut -d' ' -f1)
+SEM_TW=$(shasum -a 256 "$DEMO_DIR/semantic/tweak_O2" | cut -d' ' -f1)
+echo "--- similar <base_O0> (expect semantic_variant_strong to O2 and Os)"
+$CTL similar "$SEM_O0" | python3 -c '
+import json,sys
+r = json.load(sys.stdin)
+for e in r["edges"]:
+    ev = e["evidence"]
+    print("%s: score=%.2f matched=%s cov=%.2f/%.2f -> %s" % (
+        e["edge_type"], e["score"], ev.get("matched_pairs"),
+        ev.get("coverage_a_to_b", 0), ev.get("coverage_b_to_a", 0), e["other_sha256"][:12]))
+    for p in ev.get("top_pairs", [])[:2]:
+        print("    pair %#x <-> %#x score %.3f" % (p["a_offset"], p["b_offset"], p["score"]))'
+echo "--- variants <base_O0> (O0/O2/Os + tweak share a group via strong semantic edges)"
+$CTL variants "$SEM_O0" | python3 -c '
+import json,sys
+r = json.load(sys.stdin)
+for m in r["members"]:
+    print("member:", m["sha256"][:16], m["artifact_class"])'
+
 echo "==> integration test against the same database"
 cargo test -p corpus-core --test similarity -- --nocapture
 

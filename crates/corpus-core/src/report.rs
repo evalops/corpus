@@ -240,7 +240,7 @@ async fn expand_variants_for(
         for e in edges::edges_for(pool, tenant_id, *id).await? {
             if !matches!(
                 e.edge_type.as_str(),
-                edge_type::BYTE_SIMILAR | edge_type::SHARED_PROVENANCE
+                edge_type::BYTE_SIMILAR | edge_type::SHARED_PROVENANCE | edge_type::SEMANTIC_WEAK
             ) {
                 continue;
             }

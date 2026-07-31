@@ -154,14 +154,15 @@ mod tests {
     #[test]
     fn roundtrip_and_tamper_rejection() {
         let dir = tempfile::tempdir().unwrap();
-        let cipher = SpoolCipher::load_or_create(dir.path()).unwrap();
+        // File backend: tests never touch the real OS key store.
+        let cipher = load_or_create_file(dir.path()).unwrap();
         let plaintext = b"sample bytes for the spool";
         let blob = cipher.encrypt(plaintext);
         assert_ne!(&blob[24..], plaintext, "stored bytes must be ciphertext");
         assert_eq!(cipher.decrypt(&blob).unwrap(), plaintext);
 
         // Same key survives a "restart" (reload from the OS store).
-        let cipher2 = SpoolCipher::load_or_create(dir.path()).unwrap();
+        let cipher2 = load_or_create_file(dir.path()).unwrap();
         assert_eq!(cipher2.decrypt(&blob).unwrap(), plaintext);
 
         // Tampered chunk is rejected, never silently accepted.
@@ -177,7 +178,7 @@ mod tests {
     #[test]
     fn chunked_stream_roundtrip_and_tamper() {
         let dir = tempfile::tempdir().unwrap();
-        let cipher = SpoolCipher::load_or_create(dir.path()).unwrap();
+        let cipher = load_or_create_file(dir.path()).unwrap();
         let prefix = SpoolCipher::stream_prefix();
         let chunks: Vec<Vec<u8>> =
             vec![b"chunk one".to_vec(), vec![7u8; 100_000], b"tail".to_vec()];
