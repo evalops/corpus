@@ -1,7 +1,7 @@
 //! Investigation / campaign report: one artifact (or hunt) → full picture
 //! for an analyst: detections, blast radius, variants, opinions, findings,
-//! and recommended actions. This is the SOC-facing assemble step that
-//! Stairwell productizes as Backstory.
+//! and recommended actions. SOC-facing assemble over retained corpus
+//! evidence (API/CLI JSON, not a hosted investigation UI).
 
 use crate::dto::{InvestigationReport, RecommendedAction, SeveritySummary};
 use crate::error::{Error, Result};

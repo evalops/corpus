@@ -1,5 +1,5 @@
 -- Continuous re-analysis tracking, autonomous detection events, and
--- investigation scaffolding for the Stairwell-shaped product loop:
+-- investigation scaffolding for the continuous re-analysis product loop:
 -- retain → detect → re-hunt history → blast radius → recommended actions.
 
 CREATE TABLE IF NOT EXISTS detection_event (

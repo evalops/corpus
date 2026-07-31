@@ -53,7 +53,7 @@ endpoint (Linux / Windows)           control plane
 | **Analyst** | Prevalence, rarity search, opinions, webhook triggers, dropper leads, proof-of-absence, read-only MCP, `GET /api/v1/metrics` |
 | **Detonation** | Optional CAPEv2 adapter; sample egress off by default |
 
-Corpus is self-hosted ground truth (private longitudinal corpus + retro-hunt). It is not a SaaS AI SOC UI; investigation output is API/CLI JSON for tools you already run.
+Corpus is a self-hosted private longitudinal corpus and retro-hunt control plane. Investigation output is API/CLI JSON for tools you already run.
 
 ## Security (defaults)
 
