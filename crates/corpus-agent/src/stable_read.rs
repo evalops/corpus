@@ -262,6 +262,11 @@ mod tests {
             1 << 20,
             2,
             Some(&move || {
+                // Windows filesystem timestamps have ~10-15ms granularity:
+                // a content-identical rewrite inside the same tick is
+                // undetectable by (size, mtime) alone. Cross the tick.
+                #[cfg(windows)]
+                std::thread::sleep(std::time::Duration::from_millis(30));
                 std::fs::write(&t2, b"version two of the file!!").unwrap();
             }),
             None,

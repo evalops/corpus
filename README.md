@@ -176,6 +176,13 @@ minifilter + ETW, 10.10 Windows):
   signing, release certification).
 - **USN records are used as a change signal**, not resolved to paths
   (file-reference → path resolution is follow-up).
+- **Stable-read mutation detection on Windows is timestamp-limited**:
+  NTFS write timestamps have ~10-15ms granularity, so a content-identical
+  rewrite within the same tick is undetectable by (size, mtime, index)
+  alone. Same tradeoff every user-mode collector makes; size-changing or
+  later-tick mutations are caught (this exact case surfaced as a
+  windows-latest CI test failure and is covered by a granularity-crossing
+  regression test).
 - **Live-test caveat**: no Windows machine was available during
   development. Verification is cross-compilation
   (`x86_64-pc-windows-gnu`, mingw-w64), cfg-gated unit tests, and the
