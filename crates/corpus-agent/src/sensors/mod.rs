@@ -13,4 +13,6 @@ pub mod fanotify;
 pub mod poll;
 #[cfg(target_os = "windows")]
 pub mod rdcw;
+/// Record-stream parser for rdcw; platform-free so it is tested everywhere.
+pub mod rdcw_parse;
 pub mod usn;

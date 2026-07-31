@@ -21,7 +21,7 @@ use windows_sys::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
     FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SECURITY,
-    FILE_NOTIFY_INFORMATION, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -91,25 +91,24 @@ pub fn watch_root(db: Arc<StateDb>, root: PathBuf, exclusions: Vec<String>, debo
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
-        let mut offset = 0usize;
-        loop {
-            let info = unsafe {
-                (buf.as_ptr().add(offset) as *const FILE_NOTIFY_INFORMATION).read_unaligned()
-            };
-            let name_len = info.FileNameLength as usize / 2;
-            let name = String::from_utf16_lossy(unsafe {
-                std::slice::from_raw_parts(info.FileName.as_ptr(), name_len)
-            });
-            let action = info.Action;
+        if returned == 0 {
+            continue;
+        }
+        // Parse in place from the original buffer, bounded to the reported
+        // byte count. No record is copied out, so the variable-length
+        // FileName field is decoded from its real location (M9 review fix:
+        // the old read_unaligned copy left FileName pointing at the one
+        // element array in the stack copy).
+        for rec in crate::sensors::rdcw_parse::parse_notify_records(&buf[..returned as usize]) {
             let action_name = ACTION_NAMES
                 .iter()
-                .find(|(a, _)| *a == action)
+                .find(|(a, _)| *a == rec.action)
                 .map(|(_, n)| *n)
                 .unwrap_or("unknown");
             // Renames/creates/writes are priority-2 candidates (spec 10.8).
-            let path = root.join(&name);
+            let path = root.join(&rec.file_name);
             let s = path.to_string_lossy();
-            if action != 0x2 /* removed: nothing to capture */ && !crate::config::matches_exclusion(&exclusions, &s)
+            if rec.action != 0x2 /* removed: nothing to capture */ && !crate::config::matches_exclusion(&exclusions, &s)
             {
                 if let Err(e) =
                     db.enqueue(&s, priority::WRITTEN_OR_RENAMED, action_name, debounce_ms)
@@ -117,10 +116,6 @@ pub fn watch_root(db: Arc<StateDb>, root: PathBuf, exclusions: Vec<String>, debo
                     tracing::warn!(error = %e, path = %s, "failed to enqueue RDCW candidate");
                 }
             }
-            if info.NextEntryOffset == 0 {
-                break;
-            }
-            offset += info.NextEntryOffset as usize;
         }
     }
 }

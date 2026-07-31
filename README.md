@@ -85,8 +85,11 @@ endpoint (Linux)                     control plane
   YARA-X rule registry with immutable bundles, retro-hunts pinned to a
   corpus watermark, scan cache
   `(tenant, artifact, bundle digest, engine, config)`, forward coverage,
-  blast-radius JSON. First-class multi-tenancy (tenant registry, slug or
-  UUID header, FK-scoped tables).
+  blast-radius JSON. Hunt reruns replay the scan cache without rereading
+  bytes, and cached terminal states (timeout/error) still count toward
+  `timed_out`/`failed` — a COMPLETED_PARTIAL hunt stays PARTIAL on rerun.
+  First-class multi-tenancy (tenant registry, slug or UUID header,
+  FK-scoped tables).
 - **M1 — Linux agent**: enrollment (one-time token → bearer), YAML policy,
   checkpointed resumable baseline, fanotify sensor with poll-reconcile
   fallback, stable-read capture state machine (OBSERVED → … → COMPLETE or
@@ -113,7 +116,11 @@ endpoint (Linux)                     control plane
   join) with HMAC-SHA256-signed delivery outbox; proof-of-absence
   attestations on no-match reports ("0 hits across N artifacts at
   watermark W"); dropper heuristic (`hunt droppers` — lead generator, not
-  a verdict); read-only MCP server (`/mcp`, JSON-RPC, bearer auth).
+  a verdict): low-prevalence artifacts whose FIRST observation on a host
+  falls within ±24h (configurable) of an occurrence of the seed or its
+  variant group on the same host — a later re-observation inside the
+  window does not qualify an artifact first seen long before; read-only
+  MCP server (`/mcp`, JSON-RPC, bearer auth).
 - **M6 — hardening**: mTLS agent auth with per-deployment CA and
   short-lived client certs, AEAD-encrypted agent spool with OS-wrapped
   key, out-of-process sandboxed analysis (`corpus-scanner` subprocess
@@ -172,19 +179,34 @@ scores; unrelated program → no edge; high-entropy sample → limitation.
 
 ## Windows agent (M2, user-mode fallback)
 
-`corpus-agent` builds and runs on Windows (x86_64-pc-windows-gnu
-cross-compile via mingw-w64; `windows-latest` CI job builds and runs the
-agent test suite natively — that job is our only live Windows execution
-environment, see caveat below).
+The Windows agent is a working poll/reconcile collector with native-tested
+shared machinery: `corpus-agent` builds and runs on Windows
+(x86_64-pc-windows-gnu cross-compile via mingw-w64; `windows-latest` CI
+job builds and runs the agent test suite natively — that job is our only
+live Windows execution environment, see caveat below). On top of the
+poll/reconcile core sit two user-mode sensors that now carry
+native-tested, platform-free parsing and cursor logic: the
+ReadDirectoryChangesW watcher (record stream parsed in place from the
+original buffer with whole-record bounds validation, unit-tested with
+crafted buffers including long filenames and truncated records) and the
+USN change journal recovery (queries the live journal identity first,
+persists a `(journal_id, next_usn)` cursor in the agent's SQLite state,
+resumes from the cursor on restart, and forces a full reconciliation when
+continuity is lost through journal recreation or truncation).
 
 Implemented (user mode, spec 10.10 fallback path):
 
 - **ReadDirectoryChangesW watcher** (recursive, file-name/last-write/
   security) feeding the standard candidate pipeline; queue overflow is a
-  `SENSOR_OVERFLOW` coverage gap.
-- **USN change journal** (FSCTL_READ_JOURNAL) as a downtime-recovery
-  signal: records trigger an immediate reconciliation scan. Without
-  volume read access it degrades cleanly to the periodic poll sensor.
+  `SENSOR_OVERFLOW` coverage gap. Record parsing is bounds-checked and
+  decodes filenames in place (no struct copies out of the notify buffer).
+- **USN change journal** (FSCTL_QUERY_USN_JOURNAL + FSCTL_READ_JOURNAL
+  with the current journal ID, per the Microsoft contract) as a
+  downtime-recovery signal with a persisted resume cursor: records since
+  the cursor trigger an immediate reconciliation scan; journal recreation
+  (ID mismatch) or a truncated cursor forces a full reconciliation.
+  Without volume read access it degrades cleanly to the periodic poll
+  sensor.
 - **File identity** via GetFileInformationByHandle (volume serial + file
   index, the Windows analog of dev/inode) in the stable-read re-stat.
 - **ADS awareness** at the metadata level: non-default streams are

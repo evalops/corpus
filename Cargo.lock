@@ -615,6 +615,7 @@ dependencies = [
  "hex",
  "hostname",
  "libc",
+ "rand 0.8.7",
  "reqwest",
  "rusqlite",
  "security-framework",

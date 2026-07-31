@@ -238,10 +238,13 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
         // User-mode fallback (spec 10.10 Windows): ReadDirectoryChangesW
-        // for live events; USN journal as a startup recovery signal —
-        // records prove "something changed while we were down" and trigger
-        // an immediate reconciliation pass. Without volume read access the
-        // journal read fails and the poll sensor covers recovery.
+        // for live events; USN journal as a startup recovery signal with a
+        // persisted (journal_id, next_usn) cursor — records prove
+        // "something changed while we were down" and trigger an immediate
+        // reconciliation pass. Lost cursor continuity (journal recreated
+        // or truncated) forces a full reconciliation. Without volume read
+        // access the journal read fails and the poll sensor covers
+        // recovery.
         sensors::rdcw::start(
             db.clone(),
             &cfg.watch.paths,
@@ -249,21 +252,32 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
             cfg.watch.debounce_ms,
         );
         db.set_identity("sensor", "rdcw_user_mode")?;
+        let mut reconcile_needed = false;
         for root in &cfg.watch.paths {
-            let records = sensors::usn::read_journal(root, 0);
-            if !records.is_empty() {
-                tracing::info!(root = %root.display(), records = records.len(), "USN journal shows changes since last run; reconciling");
-                let db2 = db.clone();
-                let cfg2 = cfg.clone();
-                tokio::task::spawn_blocking(move || {
-                    let _ = baseline::reconcile_scan(
-                        &db2,
-                        &cfg2.watch.paths,
-                        &cfg2.watch.exclusions,
-                        cfg2.watch.debounce_ms,
-                    );
-                });
+            match sensors::usn::check_downtime_changes(&db, root) {
+                sensors::usn::DowntimeStatus::Changes => {
+                    tracing::info!(root = %root.display(), "USN journal shows changes since last run; reconciling");
+                    reconcile_needed = true;
+                }
+                sensors::usn::DowntimeStatus::ReconcileRequired => {
+                    tracing::warn!(root = %root.display(), "USN cursor continuity lost; forcing full reconciliation");
+                    reconcile_needed = true;
+                }
+                sensors::usn::DowntimeStatus::NoChanges
+                | sensors::usn::DowntimeStatus::Unavailable => {}
             }
+        }
+        if reconcile_needed {
+            let db2 = db.clone();
+            let cfg2 = cfg.clone();
+            tokio::task::spawn_blocking(move || {
+                let _ = baseline::reconcile_scan(
+                    &db2,
+                    &cfg2.watch.paths,
+                    &cfg2.watch.exclusions,
+                    cfg2.watch.debounce_ms,
+                );
+            });
         }
     }
 
