@@ -169,7 +169,7 @@ async fn vault_bootstrap_end_to_end() {
     let (art_x, sha_x) = commit(&pool, &cas, tenant_id, Some(occ("prod-web-1", 2, "/opt/app", x.len() as i64, t1, "historical_backfill")), None, None, x).await;
 
     // Same bytes at a new path: ONE artifact, TWO occurrences spanning t0..t1.
-    let br = report::by_sha256(&pool, tenant_id, &sha_x).await.unwrap();
+    let br = report::by_sha256(&pool, tenant_id, &sha_x, false).await.unwrap();
     assert_eq!(br.artifacts.len(), 1);
     assert_eq!(br.occurrences.len(), 2, "dedup across snapshots still records occurrences");
     let first = br.hosts[0].first_observed;
@@ -189,7 +189,7 @@ async fn vault_bootstrap_end_to_end() {
     let hunt = corpus_core::hunts::create_hunt(&pool, tenant_id, &bundle.digest).await.unwrap();
     let hunt = corpus_core::hunts::run_hunt(&pool, &cas, tenant_id, hunt.id).await.unwrap();
     assert_eq!(hunt.matched, 1);
-    let br_h = report::by_hunt(&pool, tenant_id, hunt.id).await.unwrap();
+    let br_h = report::by_hunt(&pool, tenant_id, hunt.id, false).await.unwrap();
     assert_eq!(br_h.artifacts[0].sha256, sha_v2);
     assert_eq!(br_h.occurrences[0].observed_at, t1, "hunt blast radius shows backdated observation");
 
@@ -207,7 +207,7 @@ async fn vault_bootstrap_end_to_end() {
     .await;
 
     // Intel artifact: no occurrences, excluded from retro hunts.
-    let br_i = report::by_sha256(&pool, tenant_id, &intel_sha).await.unwrap();
+    let br_i = report::by_sha256(&pool, tenant_id, &intel_sha, false).await.unwrap();
     assert_eq!(br_i.artifacts.len(), 1);
     assert!(br_i.occurrences.is_empty(), "intel artifacts carry NO host occurrences");
     let scope: (String,) = sqlx::query_as("SELECT scope FROM artifact WHERE tenant_id = $1 AND id = $2")
