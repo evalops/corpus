@@ -15,14 +15,11 @@ use uuid::Uuid;
 pub fn validate_slug(slug: &str) -> Result<()> {
     let ok = slug.len() <= 63
         && !slug.is_empty()
-        && slug
-            .chars()
-            .enumerate()
-            .all(|(i, c)| match c {
-                'a'..='z' | '0'..='9' => true,
-                '-' => i > 0 && i + 1 < slug.len(),
-                _ => false,
-            });
+        && slug.chars().enumerate().all(|(i, c)| match c {
+            'a'..='z' | '0'..='9' => true,
+            '-' => i > 0 && i + 1 < slug.len(),
+            _ => false,
+        });
     if ok {
         Ok(())
     } else {
@@ -142,7 +139,12 @@ pub async fn resolve_active_tenant(pool: &PgPool, header: Option<&str>) -> Resul
 }
 
 /// Ensure a tenant row exists (used by tests that mint random tenant ids).
-pub async fn ensure_tenant(pool: &PgPool, id: Uuid, slug: &str, name: &str) -> Result<TenantResponse> {
+pub async fn ensure_tenant(
+    pool: &PgPool,
+    id: Uuid,
+    slug: &str,
+    name: &str,
+) -> Result<TenantResponse> {
     if let Ok(existing) = get_tenant(pool, id).await {
         return Ok(existing);
     }

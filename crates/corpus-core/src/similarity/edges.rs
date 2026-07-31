@@ -26,7 +26,12 @@ pub struct EdgeRow {
     pub created_at: chrono::DateTime<Utc>,
 }
 
-async fn store_features(pool: &PgPool, tenant: Uuid, artifact: Uuid, f: &ExtractedFeatures) -> Result<()> {
+async fn store_features(
+    pool: &PgPool,
+    tenant: Uuid,
+    artifact: Uuid,
+    f: &ExtractedFeatures,
+) -> Result<()> {
     let mut rows: Vec<(&str, &str, serde_json::Value)> = vec![(
         "byte",
         "ssdeep",
@@ -36,7 +41,11 @@ async fn store_features(pool: &PgPool, tenant: Uuid, artifact: Uuid, f: &Extract
         rows.push(("normalized", &n.name, serde_json::json!({"hash": n.hash})));
     }
     if let Some(l) = &f.section_layout {
-        rows.push(("structural", "section_layout", serde_json::json!({"hash": l})));
+        rows.push((
+            "structural",
+            "section_layout",
+            serde_json::json!({"hash": l}),
+        ));
     }
     if let Some(l) = &f.import_set {
         rows.push(("structural", "import_set", serde_json::json!({"hash": l})));
@@ -45,10 +54,18 @@ async fn store_features(pool: &PgPool, tenant: Uuid, artifact: Uuid, f: &Extract
         rows.push(("structural", "export_set", serde_json::json!({"hash": l})));
     }
     if let Some(c) = &f.compiler_hint {
-        rows.push(("provenance", "compiler_hint", serde_json::json!({"value": c})));
+        rows.push((
+            "provenance",
+            "compiler_hint",
+            serde_json::json!({"value": c}),
+        ));
     }
     if let Some(l) = &f.parse_limitation {
-        rows.push(("structural", "parse_limitation", serde_json::json!({"value": l})));
+        rows.push((
+            "structural",
+            "parse_limitation",
+            serde_json::json!({"value": l}),
+        ));
     }
     for (family, name, value) in rows {
         sqlx::query(
@@ -102,11 +119,13 @@ async fn insert_edge(
 }
 
 async fn group_of(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<Option<Uuid>> {
-    Ok(sqlx::query_scalar("SELECT group_id FROM variant_group_member WHERE tenant_id = $1 AND artifact_id = $2")
-        .bind(tenant)
-        .bind(artifact)
-        .fetch_optional(pool)
-        .await?)
+    Ok(sqlx::query_scalar(
+        "SELECT group_id FROM variant_group_member WHERE tenant_id = $1 AND artifact_id = $2",
+    )
+    .bind(tenant)
+    .bind(artifact)
+    .fetch_optional(pool)
+    .await?)
 }
 
 async fn add_member(pool: &PgPool, tenant: Uuid, group: Uuid, artifact: Uuid) -> Result<()> {
@@ -126,7 +145,10 @@ async fn add_member(pool: &PgPool, tenant: Uuid, group: Uuid, artifact: Uuid) ->
 /// the merged component keeps the smaller group id regardless of insertion
 /// order (spec 16.6 connected components).
 pub async fn union_groups(pool: &PgPool, tenant: Uuid, a: Uuid, b: Uuid) -> Result<()> {
-    let (ga, gb) = (group_of(pool, tenant, a).await?, group_of(pool, tenant, b).await?);
+    let (ga, gb) = (
+        group_of(pool, tenant, a).await?,
+        group_of(pool, tenant, b).await?,
+    );
     match (ga, gb) {
         (Some(g1), Some(g2)) if g1 != g2 => {
             let (keep, drop_g) = (g1.min(g2), g1.max(g2));
@@ -211,19 +233,30 @@ pub async fn analyze_artifact(
         .await?;
         for (other,) in candidates {
             // Compatible format check via artifact_class of both sides.
-            let other_class: Option<(String,)> =
-                sqlx::query_as("SELECT artifact_class FROM artifact WHERE tenant_id = $1 AND id = $2")
-                    .bind(tenant)
-                    .bind(other)
-                    .fetch_optional(pool)
-                    .await?;
+            let other_class: Option<(String,)> = sqlx::query_as(
+                "SELECT artifact_class FROM artifact WHERE tenant_id = $1 AND id = $2",
+            )
+            .bind(tenant)
+            .bind(other)
+            .fetch_optional(pool)
+            .await?;
             if other_class.map(|c| c.0) != Some(artifact_class.to_string()) {
                 continue;
             }
             let evidence = serde_json::json!({
                 "matched_feature": n.name, "hash": n.hash, "format": artifact_class,
             });
-            if insert_edge(pool, tenant, artifact, other, edge_type::NORMALIZED_EQUIVALENT, 1.0, evidence).await? {
+            if insert_edge(
+                pool,
+                tenant,
+                artifact,
+                other,
+                edge_type::NORMALIZED_EQUIVALENT,
+                1.0,
+                evidence,
+            )
+            .await?
+            {
                 edges += 1;
             }
         }
@@ -247,11 +280,12 @@ pub async fn analyze_artifact(
     .fetch_all(pool)
     .await?;
     for (other, _sha, digest, entropy) in bucket {
-        let other_size: i64 = sqlx::query_scalar("SELECT size_bytes FROM artifact WHERE tenant_id = $1 AND id = $2")
-            .bind(tenant)
-            .bind(other)
-            .fetch_one(pool)
-            .await?;
+        let other_size: i64 =
+            sqlx::query_scalar("SELECT size_bytes FROM artifact WHERE tenant_id = $1 AND id = $2")
+                .bind(tenant)
+                .bind(other)
+                .fetch_one(pool)
+                .await?;
         let ratio = (f.size_bytes.max(other_size as u64) as f64)
             / (f.size_bytes.min(other_size as u64).max(1) as f64);
         if ratio > MODEL_V1.size_ratio_max {
@@ -266,7 +300,17 @@ pub async fn analyze_artifact(
             "ssdeep_score": score, "size_ratio": ratio, "entropy_delta": entropy_delta,
             "note": "weak lead; never merges variant groups",
         });
-        if insert_edge(pool, tenant, artifact, other, edge_type::BYTE_SIMILAR, score as f64, evidence).await? {
+        if insert_edge(
+            pool,
+            tenant,
+            artifact,
+            other,
+            edge_type::BYTE_SIMILAR,
+            score as f64,
+            evidence,
+        )
+        .await?
+        {
             edges += 1;
         }
     }
@@ -285,7 +329,17 @@ pub async fn analyze_artifact(
         .await?;
         for (other,) in candidates {
             let evidence = serde_json::json!({"compiler_hint": hint, "note": "context edge, never family proof"});
-            if insert_edge(pool, tenant, artifact, other, edge_type::SHARED_PROVENANCE, 1.0, evidence).await? {
+            if insert_edge(
+                pool,
+                tenant,
+                artifact,
+                other,
+                edge_type::SHARED_PROVENANCE,
+                1.0,
+                evidence,
+            )
+            .await?
+            {
                 edges += 1;
             }
         }
@@ -346,9 +400,15 @@ pub async fn edges_for(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<Ve
 }
 
 /// Variant group members (strong-edge component) for an artifact.
-pub async fn group_members(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<(Option<Uuid>, Vec<(Uuid, Vec<u8>)>)> {
+pub async fn group_members(
+    pool: &PgPool,
+    tenant: Uuid,
+    artifact: Uuid,
+) -> Result<(Option<Uuid>, Vec<(Uuid, Vec<u8>)>)> {
     let group = group_of(pool, tenant, artifact).await?;
-    let Some(g) = group else { return Ok((None, vec![])) };
+    let Some(g) = group else {
+        return Ok((None, vec![]));
+    };
     let members: Vec<(Uuid, Vec<u8>)> = sqlx::query_as(
         "SELECT m.artifact_id, a.sha256 FROM variant_group_member m
          JOIN artifact a ON a.tenant_id = m.tenant_id AND a.id = m.artifact_id
@@ -368,22 +428,31 @@ pub async fn similar_view(
     tenant: Uuid,
     sha256_hex: &str,
 ) -> Result<Option<crate::dto::SimilarResponse>> {
-    let Ok(raw) = crate::hash::hex_to_raw(sha256_hex) else { return Ok(None) };
+    let Ok(raw) = crate::hash::hex_to_raw(sha256_hex) else {
+        return Ok(None);
+    };
     let artifact: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM artifact WHERE tenant_id = $1 AND sha256 = $2")
             .bind(tenant)
             .bind(&raw)
             .fetch_optional(pool)
             .await?;
-    let Some((artifact,)) = artifact else { return Ok(None) };
+    let Some((artifact,)) = artifact else {
+        return Ok(None);
+    };
     let mut out = Vec::new();
     for e in edges_for(pool, tenant, artifact).await? {
-        let other = if e.src_artifact == artifact { e.dst_artifact } else { e.src_artifact };
-        let sha: Vec<u8> = sqlx::query_scalar("SELECT sha256 FROM artifact WHERE tenant_id = $1 AND id = $2")
-            .bind(tenant)
-            .bind(other)
-            .fetch_one(pool)
-            .await?;
+        let other = if e.src_artifact == artifact {
+            e.dst_artifact
+        } else {
+            e.src_artifact
+        };
+        let sha: Vec<u8> =
+            sqlx::query_scalar("SELECT sha256 FROM artifact WHERE tenant_id = $1 AND id = $2")
+                .bind(tenant)
+                .bind(other)
+                .fetch_one(pool)
+                .await?;
         out.push(crate::dto::SimilarEdgeView {
             other_artifact: other,
             other_sha256: hex::encode(sha),
@@ -393,7 +462,11 @@ pub async fn similar_view(
             evidence: e.evidence,
         });
     }
-    Ok(Some(crate::dto::SimilarResponse { artifact_id: artifact, sha256: sha256_hex.to_string(), edges: out }))
+    Ok(Some(crate::dto::SimilarResponse {
+        artifact_id: artifact,
+        sha256: sha256_hex.to_string(),
+        edges: out,
+    }))
 }
 
 /// `corpusctl variants <sha256>` view: strong-edge group members.
@@ -402,14 +475,18 @@ pub async fn variants_view(
     tenant: Uuid,
     sha256_hex: &str,
 ) -> Result<Option<crate::dto::VariantsResponse>> {
-    let Ok(raw) = crate::hash::hex_to_raw(sha256_hex) else { return Ok(None) };
+    let Ok(raw) = crate::hash::hex_to_raw(sha256_hex) else {
+        return Ok(None);
+    };
     let artifact: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM artifact WHERE tenant_id = $1 AND sha256 = $2")
             .bind(tenant)
             .bind(&raw)
             .fetch_optional(pool)
             .await?;
-    let Some((artifact,)) = artifact else { return Ok(None) };
+    let Some((artifact,)) = artifact else {
+        return Ok(None);
+    };
     let (group, members) = group_members(pool, tenant, artifact).await?;
     let mut out = Vec::new();
     for (id, sha) in members {

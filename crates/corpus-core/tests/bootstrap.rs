@@ -24,7 +24,9 @@ impl MockServer {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let handle = std::thread::spawn(move || {
             for _ in 0..max_requests {
-                let Ok((mut stream, _)) = listener.accept() else { break };
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let mut line = String::new();
                 if reader.read_line(&mut line).is_err() {
@@ -45,7 +47,9 @@ impl MockServer {
                 // Read exactly the request body, then respond.
                 let mut sink = vec![0u8; content_length as usize];
                 let _ = reader.read_exact(&mut sink);
-                let found = routes.iter().find(|(p, _)| path.ends_with(p.as_str()) || path.contains(p.as_str()));
+                let found = routes
+                    .iter()
+                    .find(|(p, _)| path.ends_with(p.as_str()) || path.contains(p.as_str()));
                 let (status, body, ctype) = match found {
                     Some((_, (ct, b))) => ("200 OK", b.clone(), ct.clone()),
                     None => ("404 Not Found", b"{}".to_vec(), "application/json".into()),
@@ -58,7 +62,10 @@ impl MockServer {
                 let _ = stream.write_all(&body);
             }
         });
-        MockServer { base, handle: Some(handle) }
+        MockServer {
+            base,
+            handle: Some(handle),
+        }
     }
 }
 
@@ -72,7 +79,14 @@ impl Drop for MockServer {
 
 // ---------- helpers ----------
 
-fn occ(host: &str, seq: i64, path: &str, size: i64, observed: chrono::DateTime<chrono::Utc>, reason: &str) -> OccurrenceInfo {
+fn occ(
+    host: &str,
+    seq: i64,
+    path: &str,
+    size: i64,
+    observed: chrono::DateTime<chrono::Utc>,
+    reason: &str,
+) -> OccurrenceInfo {
     OccurrenceInfo {
         host_name: host.into(),
         agent_id: Uuid::new_v4(),
@@ -96,23 +110,34 @@ async fn commit(
     bytes: &[u8],
 ) -> (Uuid, String) {
     let sha = hash::sha256_hex(bytes);
-    let ann = ingest::announce(pool, tenant_id, &AnnounceRequest {
-        sha256: sha.clone(),
-        size_bytes: bytes.len() as i64,
-        occurrence: occurrence.clone(),
-    })
+    let ann = ingest::announce(
+        pool,
+        tenant_id,
+        &AnnounceRequest {
+            sha256: sha.clone(),
+            size_bytes: bytes.len() as i64,
+            occurrence: occurrence.clone(),
+        },
+    )
     .await
     .unwrap();
     if let Some(upload_id) = ann.upload_id {
-        ingest::stage_upload(pool, cas, tenant_id, upload_id, bytes).await.unwrap();
-        let fin = ingest::finalize(pool, cas, tenant_id, &FinalizeRequest {
-            upload_id,
-            sha256: sha.clone(),
-            size_bytes: bytes.len() as i64,
-            occurrence,
-            scope: scope.map(|s| s.to_string()),
-            provenance,
-        })
+        ingest::stage_upload(pool, cas, tenant_id, upload_id, bytes)
+            .await
+            .unwrap();
+        let fin = ingest::finalize(
+            pool,
+            cas,
+            tenant_id,
+            &FinalizeRequest {
+                upload_id,
+                sha256: sha.clone(),
+                size_bytes: bytes.len() as i64,
+                occurrence,
+                scope: scope.map(|s| s.to_string()),
+                provenance,
+            },
+        )
         .await
         .unwrap();
         return (fin.artifact_id, sha);
@@ -152,10 +177,16 @@ async fn vault_bootstrap_end_to_end() {
     let cas = FsCas::new(cas_dir.path()).unwrap();
     let tenant_id = Uuid::new_v4();
     let slug = format!("boot-{}", &tenant_id.simple().to_string()[..8]);
-    tenant::ensure_tenant(&pool, tenant_id, &slug, "Bootstrap test").await.unwrap();
+    tenant::ensure_tenant(&pool, tenant_id, &slug, "Bootstrap test")
+        .await
+        .unwrap();
 
-    let t0 = chrono::DateTime::parse_from_rfc3339("2024-01-15T08:00:00Z").unwrap().with_timezone(&chrono::Utc);
-    let t1 = chrono::DateTime::parse_from_rfc3339("2024-03-20T08:00:00Z").unwrap().with_timezone(&chrono::Utc);
+    let t0 = chrono::DateTime::parse_from_rfc3339("2024-01-15T08:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let t1 = chrono::DateTime::parse_from_rfc3339("2024-03-20T08:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
 
     // ===== FEATURE 1: snapshot backfill =====
     // snap1: /etc/tool = v1, /etc/app = X
@@ -163,15 +194,85 @@ async fn vault_bootstrap_end_to_end() {
     let v1 = b"tool binary v1 CORPUS_DEMO_MARKER_STRING";
     let v2 = b"tool binary v2 changed CORPUS_DEMO_MARKER_STRING";
     let x = b"app payload bytes";
-    commit(&pool, &cas, tenant_id, Some(occ("prod-web-1", 1, "/etc/tool", v1.len() as i64, t0, "historical_backfill")), None, None, v1).await;
-    commit(&pool, &cas, tenant_id, Some(occ("prod-web-1", 2, "/etc/app", x.len() as i64, t0, "historical_backfill")), None, None, x).await;
-    let (_, sha_v2) = commit(&pool, &cas, tenant_id, Some(occ("prod-web-1", 1, "/etc/tool", v2.len() as i64, t1, "historical_backfill")), None, None, v2).await;
-    let (art_x, sha_x) = commit(&pool, &cas, tenant_id, Some(occ("prod-web-1", 2, "/opt/app", x.len() as i64, t1, "historical_backfill")), None, None, x).await;
+    commit(
+        &pool,
+        &cas,
+        tenant_id,
+        Some(occ(
+            "prod-web-1",
+            1,
+            "/etc/tool",
+            v1.len() as i64,
+            t0,
+            "historical_backfill",
+        )),
+        None,
+        None,
+        v1,
+    )
+    .await;
+    commit(
+        &pool,
+        &cas,
+        tenant_id,
+        Some(occ(
+            "prod-web-1",
+            2,
+            "/etc/app",
+            x.len() as i64,
+            t0,
+            "historical_backfill",
+        )),
+        None,
+        None,
+        x,
+    )
+    .await;
+    let (_, sha_v2) = commit(
+        &pool,
+        &cas,
+        tenant_id,
+        Some(occ(
+            "prod-web-1",
+            1,
+            "/etc/tool",
+            v2.len() as i64,
+            t1,
+            "historical_backfill",
+        )),
+        None,
+        None,
+        v2,
+    )
+    .await;
+    let (art_x, sha_x) = commit(
+        &pool,
+        &cas,
+        tenant_id,
+        Some(occ(
+            "prod-web-1",
+            2,
+            "/opt/app",
+            x.len() as i64,
+            t1,
+            "historical_backfill",
+        )),
+        None,
+        None,
+        x,
+    )
+    .await;
 
     // Same bytes at a new path: ONE artifact, TWO occurrences spanning t0..t1.
-    let br = report::by_sha256(&pool, tenant_id, &sha_x, false).await.unwrap();
+    let br = report::by_sha256(&pool, tenant_id, &sha_x, false)
+        .await
+        .unwrap();
     assert_eq!(br.artifacts.len(), 1);
-    assert_eq!(br.occurrences.len(), 2, "dedup across snapshots still records occurrences");
+    assert_eq!(
+        br.occurrences.len(),
+        2,
+        "dedup across snapshots still records occurrences"
+    );
     let first = br.hosts[0].first_observed;
     let last = br.hosts[0].last_observed;
     assert_eq!(first, t0, "first observed comes from the oldest snapshot");
@@ -185,13 +286,24 @@ async fn vault_bootstrap_end_to_end() {
 
     // Hunt over backfilled history: rule matches v2 only.
     let rule = registry_rule(&pool, tenant_id).await;
-    let bundle = corpus_core::registry::publish_bundle(&pool, tenant_id, &[rule], false).await.unwrap();
-    let hunt = corpus_core::hunts::create_hunt(&pool, tenant_id, &bundle.digest).await.unwrap();
-    let hunt = corpus_core::hunts::run_hunt(&pool, &cas, tenant_id, hunt.id).await.unwrap();
+    let bundle = corpus_core::registry::publish_bundle(&pool, tenant_id, &[rule], false)
+        .await
+        .unwrap();
+    let hunt = corpus_core::hunts::create_hunt(&pool, tenant_id, &bundle.digest)
+        .await
+        .unwrap();
+    let hunt = corpus_core::hunts::run_hunt(&pool, &cas, tenant_id, hunt.id)
+        .await
+        .unwrap();
     assert_eq!(hunt.matched, 1);
-    let br_h = report::by_hunt(&pool, tenant_id, hunt.id, false).await.unwrap();
+    let br_h = report::by_hunt(&pool, tenant_id, hunt.id, false)
+        .await
+        .unwrap();
     assert_eq!(br_h.artifacts[0].sha256, sha_v2);
-    assert_eq!(br_h.occurrences[0].observed_at, t1, "hunt blast radius shows backdated observation");
+    assert_eq!(
+        br_h.occurrences[0].observed_at, t1,
+        "hunt blast radius shows backdated observation"
+    );
 
     // ===== FEATURE 3b: intel scope + hash hunt =====
     let intel_bytes = b"intel sample bytes (mock, not real malware)";
@@ -207,20 +319,33 @@ async fn vault_bootstrap_end_to_end() {
     .await;
 
     // Intel artifact: no occurrences, excluded from retro hunts.
-    let br_i = report::by_sha256(&pool, tenant_id, &intel_sha, false).await.unwrap();
-    assert_eq!(br_i.artifacts.len(), 1);
-    assert!(br_i.occurrences.is_empty(), "intel artifacts carry NO host occurrences");
-    let scope: (String,) = sqlx::query_as("SELECT scope FROM artifact WHERE tenant_id = $1 AND id = $2")
-        .bind(tenant_id)
-        .bind(intel_art)
-        .fetch_one(&pool)
+    let br_i = report::by_sha256(&pool, tenant_id, &intel_sha, false)
         .await
         .unwrap();
+    assert_eq!(br_i.artifacts.len(), 1);
+    assert!(
+        br_i.occurrences.is_empty(),
+        "intel artifacts carry NO host occurrences"
+    );
+    let scope: (String,) =
+        sqlx::query_as("SELECT scope FROM artifact WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(intel_art)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(scope.0, "intel");
 
-    let hunt2 = corpus_core::hunts::create_hunt(&pool, tenant_id, &bundle.digest).await.unwrap();
-    let hunt2 = corpus_core::hunts::run_hunt(&pool, &cas, tenant_id, hunt2.id).await.unwrap();
-    assert_eq!(hunt2.planned_artifacts, 3, "only endpoint-scope artifacts are hunted (v1, v2, x)");
+    let hunt2 = corpus_core::hunts::create_hunt(&pool, tenant_id, &bundle.digest)
+        .await
+        .unwrap();
+    let hunt2 = corpus_core::hunts::run_hunt(&pool, &cas, tenant_id, hunt2.id)
+        .await
+        .unwrap();
+    assert_eq!(
+        hunt2.planned_artifacts, 3,
+        "only endpoint-scope artifacts are hunted (v1, v2, x)"
+    );
 
     // Indicators + exact-hash hunt against endpoint scope.
     intel::upsert_indicators(
@@ -228,18 +353,31 @@ async fn vault_bootstrap_end_to_end() {
         tenant_id,
         "taxii:mock",
         &[
-            intel::Indicator { ioc_type: "sha256".into(), value: sha_x.clone(), raw: serde_json::json!({}) },
-            intel::Indicator { ioc_type: "sha256".into(), value: intel_sha.clone(), raw: serde_json::json!({}) },
+            intel::Indicator {
+                ioc_type: "sha256".into(),
+                value: sha_x.clone(),
+                raw: serde_json::json!({}),
+            },
+            intel::Indicator {
+                ioc_type: "sha256".into(),
+                value: intel_sha.clone(),
+                raw: serde_json::json!({}),
+            },
         ],
     )
     .await
     .unwrap();
-    let hits = intel::hash_hunt(&pool, tenant_id, &[sha_x.clone(), intel_sha.clone()]).await.unwrap();
+    let hits = intel::hash_hunt(&pool, tenant_id, &[sha_x.clone(), intel_sha.clone()])
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1, "endpoint hash hits, intel hash excluded");
     assert_eq!(hits[0].value, sha_x);
 
     // ===== FEATURE 2: OCI import against mock registry =====
-    let layer = build_tar(&[("bin/demo", b"\x7fELF\x02demo-elf-bytes"), ("etc/note", b"note")]);
+    let layer = build_tar(&[
+        ("bin/demo", b"\x7fELF\x02demo-elf-bytes"),
+        ("etc/note", b"note"),
+    ]);
     let layer_gz = gzip(&layer);
     let layer_digest = format!("sha256:{}", hash::sha256_hex(&layer_gz));
     let config = serde_json::json!({"created": "2024-06-01T00:00:00Z"});
@@ -252,13 +390,32 @@ async fn vault_bootstrap_end_to_end() {
     });
     let mock = MockServer::start(
         vec![
-            ("/manifests/1.0".into(), ("application/vnd.oci.image.manifest.v1+json".into(), manifest.to_string().into_bytes())),
-            (format!("/blobs/{config_digest}"), ("application/octet-stream".into(), config.to_string().into_bytes())),
-            (format!("/blobs/{layer_digest}"), ("application/octet-stream".into(), layer_gz)),
+            (
+                "/manifests/1.0".into(),
+                (
+                    "application/vnd.oci.image.manifest.v1+json".into(),
+                    manifest.to_string().into_bytes(),
+                ),
+            ),
+            (
+                format!("/blobs/{config_digest}"),
+                (
+                    "application/octet-stream".into(),
+                    config.to_string().into_bytes(),
+                ),
+            ),
+            (
+                format!("/blobs/{layer_digest}"),
+                ("application/octet-stream".into(), layer_gz),
+            ),
         ],
         4,
     );
-    let iref = oci::parse_image_ref(&format!("{}/demo/img:1.0", mock.base.trim_start_matches("http://"))).unwrap();
+    let iref = oci::parse_image_ref(&format!(
+        "{}/demo/img:1.0",
+        mock.base.trim_start_matches("http://")
+    ))
+    .unwrap();
     let reg = oci::RegistryClient::connect(&iref, None).await.unwrap();
     let resolved = reg.resolve(&iref).await.unwrap();
     assert_eq!(resolved.layers, vec![layer_digest.clone()]);
@@ -266,9 +423,30 @@ async fn vault_bootstrap_end_to_end() {
     let entries = oci::walk_layer(&layer_bytes, true, 1 << 20).unwrap();
     assert_eq!(entries.len(), 2);
     for (i, e) in entries.iter().enumerate() {
-        let prov = oci::file_provenance("localhost/demo/img:1.0", &resolved.image_digest, &layer_digest, &e.path);
-        let o = occ("localhost/demo/img:1.0", i as i64 + 1, &e.path, e.size as i64, resolved.created.unwrap(), "oci_image");
-        commit(&pool, &cas, tenant_id, Some(o), None, Some(prov), e.bytes.as_ref().unwrap()).await;
+        let prov = oci::file_provenance(
+            "localhost/demo/img:1.0",
+            &resolved.image_digest,
+            &layer_digest,
+            &e.path,
+        );
+        let o = occ(
+            "localhost/demo/img:1.0",
+            i as i64 + 1,
+            &e.path,
+            e.size as i64,
+            resolved.created.unwrap(),
+            "oci_image",
+        );
+        commit(
+            &pool,
+            &cas,
+            tenant_id,
+            Some(o),
+            None,
+            Some(prov),
+            e.bytes.as_ref().unwrap(),
+        )
+        .await;
     }
     let prov: (serde_json::Value,) = sqlx::query_as(
         "SELECT provenance FROM artifact WHERE tenant_id = $1 AND scope = 'endpoint' ORDER BY seq DESC LIMIT 1",
@@ -277,7 +455,10 @@ async fn vault_bootstrap_end_to_end() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(prov.0["layer_digest"], serde_json::Value::String(layer_digest.clone()));
+    assert_eq!(
+        prov.0["layer_digest"],
+        serde_json::Value::String(layer_digest.clone())
+    );
     let occ_row: Option<(String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
         "SELECT host_name, observed_at FROM occurrence_event WHERE tenant_id = $1 AND capture_reason = 'oci_image' LIMIT 1",
     )
@@ -287,7 +468,12 @@ async fn vault_bootstrap_end_to_end() {
     .unwrap();
     let (h, observed) = occ_row.expect("oci occurrence recorded");
     assert_eq!(h, "localhost/demo/img:1.0");
-    assert_eq!(observed, chrono::DateTime::parse_from_rfc3339("2024-06-01T00:00:00Z").unwrap().with_timezone(&chrono::Utc));
+    assert_eq!(
+        observed,
+        chrono::DateTime::parse_from_rfc3339("2024-06-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    );
 
     // ===== FEATURE 3a: mock TAXII poll =====
     let stix = serde_json::json!({
@@ -298,10 +484,18 @@ async fn vault_bootstrap_end_to_end() {
         ]
     });
     let taxii = MockServer::start(
-        vec![("/objects/".into(), ("application/taxii+json;version=2.1".into(), stix.to_string().into_bytes()))],
+        vec![(
+            "/objects/".into(),
+            (
+                "application/taxii+json;version=2.1".into(),
+                stix.to_string().into_bytes(),
+            ),
+        )],
         1,
     );
-    let bundle = intel::fetch_taxii_indicators(&taxii.base, "col-1", None).await.unwrap();
+    let bundle = intel::fetch_taxii_indicators(&taxii.base, "col-1", None)
+        .await
+        .unwrap();
     let iocs = intel::extract_hash_iocs(&bundle);
     assert_eq!(iocs.len(), 1);
     assert_eq!(iocs[0].value, sha_x);
@@ -309,5 +503,8 @@ async fn vault_bootstrap_end_to_end() {
 
 async fn registry_rule(pool: &sqlx::PgPool, tenant_id: Uuid) -> Uuid {
     let src = r#"rule V2Marker { strings: $m = "tool binary v2 changed" condition: $m }"#;
-    corpus_core::registry::create_rule(pool, tenant_id, src).await.unwrap().id
+    corpus_core::registry::create_rule(pool, tenant_id, src)
+        .await
+        .unwrap()
+        .id
 }

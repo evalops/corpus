@@ -14,7 +14,10 @@ pub enum Error {
     /// Server-recomputed SHA-256 does not match the client-announced hash.
     /// The commit must be rejected (core invariant #1).
     #[error("sha256 mismatch: announced {announced}, recomputed {recomputed}")]
-    HashMismatch { announced: String, recomputed: String },
+    HashMismatch {
+        announced: String,
+        recomputed: String,
+    },
 
     #[error("rule compile error: {0}")]
     RuleCompile(String),

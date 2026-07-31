@@ -159,15 +159,26 @@ pub async fn fetch_taxii_indicators(
         server_url.trim_end_matches('/'),
         collection
     );
-    let mut req = http.get(&url).header("Accept", "application/taxii+json;version=2.1");
+    let mut req = http
+        .get(&url)
+        .header("Accept", "application/taxii+json;version=2.1");
     if let Some(key) = api_key {
         req = req.header("Authorization", format!("Token {key}"));
     }
-    let resp = req.send().await.map_err(|e| Error::BadRequest(format!("taxii fetch: {e}")))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| Error::BadRequest(format!("taxii fetch: {e}")))?;
     if !resp.status().is_success() {
-        return Err(Error::BadRequest(format!("taxii {} -> {}", url, resp.status())));
+        return Err(Error::BadRequest(format!(
+            "taxii {} -> {}",
+            url,
+            resp.status()
+        )));
     }
-    resp.json().await.map_err(|e| Error::BadRequest(format!("taxii json: {e}")))
+    resp.json()
+        .await
+        .map_err(|e| Error::BadRequest(format!("taxii json: {e}")))
 }
 
 // ---------------- MalwareBazaar client ----------------
@@ -188,14 +199,20 @@ pub async fn mb_recent_hashes(api_url: &str, limit: u32) -> Result<Vec<String>> 
         .await
         .map_err(|e| Error::BadRequest(e.to_string()))?;
     if resp.get("query_status").and_then(|s| s.as_str()) != Some("ok") {
-        return Err(Error::BadRequest(format!("malwarebazaar get_recent status: {resp}")));
+        return Err(Error::BadRequest(format!(
+            "malwarebazaar get_recent status: {resp}"
+        )));
     }
     let hashes = resp
         .get("data")
         .and_then(|d| d.as_array())
         .map(|a| {
             a.iter()
-                .filter_map(|e| e.get("sha256_hash").and_then(|h| h.as_str()).map(|s| s.to_string()))
+                .filter_map(|e| {
+                    e.get("sha256_hash")
+                        .and_then(|h| h.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -212,9 +229,16 @@ pub async fn mb_fetch_zip(api_url: &str, sha256: &str) -> Result<Vec<u8>> {
         .await
         .map_err(|e| Error::BadRequest(format!("malwarebazaar get_file: {e}")))?;
     if !resp.status().is_success() {
-        return Err(Error::BadRequest(format!("malwarebazaar get_file {sha256} -> {}", resp.status())));
+        return Err(Error::BadRequest(format!(
+            "malwarebazaar get_file {sha256} -> {}",
+            resp.status()
+        )));
     }
-    Ok(resp.bytes().await.map_err(|e| Error::BadRequest(e.to_string()))?.to_vec())
+    Ok(resp
+        .bytes()
+        .await
+        .map_err(|e| Error::BadRequest(e.to_string()))?
+        .to_vec())
 }
 
 /// Unpack a MalwareBazaar zip (password "infected") into (name, bytes).
@@ -223,7 +247,8 @@ pub async fn mb_fetch_zip(api_url: &str, sha256: &str) -> Result<Vec<u8>> {
 /// without a ZipCrypto writer.
 pub fn mb_unzip(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
     let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::BadRequest(format!("zip: {e}")))?;
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| Error::BadRequest(format!("zip: {e}")))?;
     let mut out = Vec::new();
     for i in 0..archive.len() {
         let mut entry = None;
@@ -239,13 +264,16 @@ pub fn mb_unzip(zip_bytes: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
             }
         }
         if entry.is_none() {
-            let mut file = archive.by_index(i).map_err(|e| Error::BadRequest(format!("zip entry {i}: {e}")))?;
+            let mut file = archive
+                .by_index(i)
+                .map_err(|e| Error::BadRequest(format!("zip entry {i}: {e}")))?;
             if !file.is_file() {
                 continue;
             }
             let name = file.name().to_string();
             let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut file, &mut buf).map_err(|e| Error::BadRequest(e.to_string()))?;
+            std::io::Read::read_to_end(&mut file, &mut buf)
+                .map_err(|e| Error::BadRequest(e.to_string()))?;
             entry = Some((name, buf));
         }
         out.push(entry.unwrap());
@@ -293,7 +321,9 @@ mod tests {
         assert_eq!(iocs.len(), 2);
         assert!(iocs.iter().any(|i| i.ioc_type == "sha256"
             && i.value == "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"));
-        assert!(iocs.iter().any(|i| i.ioc_type == "md5" && i.value == "44d88612fea8a8f36de82e1278abb02f"));
+        assert!(iocs
+            .iter()
+            .any(|i| i.ioc_type == "md5" && i.value == "44d88612fea8a8f36de82e1278abb02f"));
     }
 
     #[test]

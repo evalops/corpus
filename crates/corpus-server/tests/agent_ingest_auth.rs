@@ -66,7 +66,12 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
     let http = reqwest::Client::new();
     let mut up = false;
     for _ in 0..60 {
-        if http.get(format!("{base}/api/v1/health")).send().await.is_ok() {
+        if http
+            .get(format!("{base}/api/v1/health"))
+            .send()
+            .await
+            .is_ok()
+        {
             up = true;
             break;
         }
@@ -77,7 +82,10 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
     // Enroll an agent via the operator token flow.
     let tok: EnrollmentTokenResponse = http
         .post(format!("{base}/api/v1/enrollment-tokens"))
-        .json(&EnrollmentTokenCreateRequest { label: Some("auth-test".into()), ttl_secs: Some(600) })
+        .json(&EnrollmentTokenCreateRequest {
+            label: Some("auth-test".into()),
+            ttl_secs: Some(600),
+        })
         .send()
         .await
         .unwrap()
@@ -168,8 +176,14 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(occ_agent, enrolled.agent_id, "forged agent_id must be overwritten");
-    assert_eq!(occ_host, "auth-test-host", "forged host_name must be overwritten");
+    assert_eq!(
+        occ_agent, enrolled.agent_id,
+        "forged agent_id must be overwritten"
+    );
+    assert_eq!(
+        occ_host, "auth-test-host",
+        "forged host_name must be overwritten"
+    );
     assert_ne!(occ_agent, forged_id);
 
     // (c) No bearer at all: unauthenticated dev path still works
@@ -187,5 +201,8 @@ async fn agent_ingest_requires_and_enforces_bearer_identity() {
         .send()
         .await
         .unwrap();
-    assert!(resp.status().is_success(), "dev path must remain open for corpusctl");
+    assert!(
+        resp.status().is_success(),
+        "dev path must remain open for corpusctl"
+    );
 }

@@ -19,7 +19,11 @@ async fn send_once(rt: &AgentRuntime) -> anyhow::Result<()> {
     let baseline_state = db
         .get_identity("baseline_state")?
         .unwrap_or_else(|| "unknown".into());
-    let baseline_percent = if baseline_state == "complete" { 100.0 } else { 0.0 };
+    let baseline_percent = if baseline_state == "complete" {
+        100.0
+    } else {
+        0.0
+    };
     let counts: serde_json::Map<String, serde_json::Value> = db
         .read_counters()?
         .into_iter()
@@ -29,7 +33,9 @@ async fn send_once(rt: &AgentRuntime) -> anyhow::Result<()> {
         .get_identity("last_upload_at")?
         .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
         .map(|t| t.with_timezone(&chrono::Utc));
-    let sensor = db.get_identity("sensor")?.unwrap_or_else(|| "unknown".into());
+    let sensor = db
+        .get_identity("sensor")?
+        .unwrap_or_else(|| "unknown".into());
 
     rt.uploader
         .heartbeat(&HeartbeatRequest {

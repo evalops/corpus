@@ -40,12 +40,19 @@ pub fn parse_image_ref(s: &str) -> Result<ImageRef> {
             (first.to_string(), r.to_string())
         }
         Some(r) => ("registry-1.docker.io".to_string(), format!("{first}/{r}")),
-        None => ("registry-1.docker.io".to_string(), format!("library/{first}")),
+        None => (
+            "registry-1.docker.io".to_string(),
+            format!("library/{first}"),
+        ),
     };
     if repository.is_empty() || reference.is_empty() {
         return Err(Error::BadRequest(format!("invalid image ref {s:?}")));
     }
-    Ok(ImageRef { registry, repository, reference })
+    Ok(ImageRef {
+        registry,
+        repository,
+        reference,
+    })
 }
 
 // ---------------- registry client ----------------
@@ -54,7 +61,10 @@ const MANIFEST_ACCEPT: &str = "application/vnd.oci.image.manifest.v1+json, appli
 
 /// Local registries (localhost / loopback / test mocks) speak plain HTTP.
 fn registry_scheme(registry: &str) -> &'static str {
-    if registry.starts_with("localhost") || registry.starts_with("127.") || registry.starts_with("[::1]") {
+    if registry.starts_with("localhost")
+        || registry.starts_with("127.")
+        || registry.starts_with("[::1]")
+    {
         "http"
     } else {
         "https"
@@ -80,12 +90,19 @@ pub struct ResolvedManifest {
 impl RegistryClient {
     /// Anonymous token flow (Docker Hub, ghcr public repos). Optional
     /// basic-auth credentials for private repos.
-    pub async fn connect(iref: &ImageRef, creds: Option<(String, String)>) -> Result<RegistryClient> {
+    pub async fn connect(
+        iref: &ImageRef,
+        creds: Option<(String, String)>,
+    ) -> Result<RegistryClient> {
         let http = reqwest::Client::new();
         let realm = if iref.registry == "registry-1.docker.io" {
             "https://auth.docker.io/token".to_string()
         } else {
-            format!("{}://{}/token", registry_scheme(&iref.registry), iref.registry)
+            format!(
+                "{}://{}/token",
+                registry_scheme(&iref.registry),
+                iref.registry
+            )
         };
         let scope = format!("repository:{}:pull", iref.repository);
         let mut req = http.get(&realm).query(&[("scope", scope.as_str())]);
@@ -97,7 +114,10 @@ impl RegistryClient {
         }
         let token = match req.send().await {
             Ok(resp) if resp.status().is_success() => {
-                let body: serde_json::Value = resp.json().await.map_err(|e| Error::BadRequest(e.to_string()))?;
+                let body: serde_json::Value = resp
+                    .json()
+                    .await
+                    .map_err(|e| Error::BadRequest(e.to_string()))?;
                 body.get("token")
                     .or_else(|| body.get("access_token"))
                     .and_then(|t| t.as_str())
@@ -106,7 +126,11 @@ impl RegistryClient {
             // Registry without a token endpoint (anonymous pulls allowed).
             _ => None,
         };
-        Ok(RegistryClient { http, registry: iref.registry.clone(), token })
+        Ok(RegistryClient {
+            http,
+            registry: iref.registry.clone(),
+            token,
+        })
     }
 
     fn auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -116,9 +140,16 @@ impl RegistryClient {
         }
     }
 
-    async fn get_manifest(&self, repo: &str, reference: &str) -> Result<(String, serde_json::Value)> {
+    async fn get_manifest(
+        &self,
+        repo: &str,
+        reference: &str,
+    ) -> Result<(String, serde_json::Value)> {
         let scheme = registry_scheme(&self.registry);
-        let url = format!("{scheme}://{}/v2/{}/manifests/{}", self.registry, repo, reference);
+        let url = format!(
+            "{scheme}://{}/v2/{}/manifests/{}",
+            self.registry, repo, reference
+        );
         let resp = self
             .auth(self.http.get(&url))
             .header("Accept", MANIFEST_ACCEPT)
@@ -126,7 +157,10 @@ impl RegistryClient {
             .await
             .map_err(|e| Error::BadRequest(format!("manifest fetch: {e}")))?;
         if !resp.status().is_success() {
-            return Err(Error::BadRequest(format!("manifest {repo}:{reference} -> {}", resp.status())));
+            return Err(Error::BadRequest(format!(
+                "manifest {repo}:{reference} -> {}",
+                resp.status()
+            )));
         }
         let digest = resp
             .headers()
@@ -134,7 +168,10 @@ impl RegistryClient {
             .and_then(|v| v.to_str().ok())
             .unwrap_or("")
             .to_string();
-        let body: serde_json::Value = resp.json().await.map_err(|e| Error::BadRequest(e.to_string()))?;
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| Error::BadRequest(e.to_string()))?;
         Ok((digest, body))
     }
 
@@ -147,15 +184,23 @@ impl RegistryClient {
             .await
             .map_err(|e| Error::BadRequest(format!("blob fetch: {e}")))?;
         if !resp.status().is_success() {
-            return Err(Error::BadRequest(format!("blob {digest} -> {}", resp.status())));
+            return Err(Error::BadRequest(format!(
+                "blob {digest} -> {}",
+                resp.status()
+            )));
         }
-        Ok(resp.bytes().await.map_err(|e| Error::BadRequest(e.to_string()))?.to_vec())
+        Ok(resp
+            .bytes()
+            .await
+            .map_err(|e| Error::BadRequest(e.to_string()))?
+            .to_vec())
     }
 
     /// Resolve tag-or-digest to a flat manifest (following an index if
     /// needed) and return config digest + ordered layer digests.
     pub async fn resolve(&self, iref: &ImageRef) -> Result<ResolvedManifest> {
-        let (mut image_digest, mut manifest) = self.get_manifest(&iref.repository, &iref.reference).await?;
+        let (mut image_digest, mut manifest) =
+            self.get_manifest(&iref.repository, &iref.reference).await?;
         let media = manifest
             .get("mediaType")
             .and_then(|m| m.as_str())
@@ -168,7 +213,10 @@ impl RegistryClient {
                 .and_then(|d| d.as_str())
                 .ok_or_else(|| Error::BadRequest("manifest list entry without digest".into()))?
                 .to_string();
-            (image_digest, manifest) = (digest.clone(), self.get_manifest(&iref.repository, &digest).await?.1);
+            (image_digest, manifest) = (
+                digest.clone(),
+                self.get_manifest(&iref.repository, &digest).await?.1,
+            );
         }
         let config_digest = manifest
             .get("config")
@@ -181,7 +229,11 @@ impl RegistryClient {
             .and_then(|l| l.as_array())
             .map(|ls| {
                 ls.iter()
-                    .filter_map(|l| l.get("digest").and_then(|d| d.as_str()).map(|s| s.to_string()))
+                    .filter_map(|l| {
+                        l.get("digest")
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string())
+                    })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
@@ -191,10 +243,19 @@ impl RegistryClient {
         let config = self.blob(&iref.repository, &config_digest).await?;
         let created = serde_json::from_slice::<serde_json::Value>(&config)
             .ok()
-            .and_then(|c| c.get("created").and_then(|t| t.as_str()).map(|s| s.to_string()))
+            .and_then(|c| {
+                c.get("created")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+            })
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
             .map(|t| t.with_timezone(&chrono::Utc));
-        Ok(ResolvedManifest { image_digest, config_digest, layers, created })
+        Ok(ResolvedManifest {
+            image_digest,
+            config_digest,
+            layers,
+            created,
+        })
     }
 
     pub async fn layer_bytes(&self, iref: &ImageRef, digest: &str) -> Result<Vec<u8>> {
@@ -239,7 +300,9 @@ pub fn walk_layer(tar_bytes: &[u8], gzipped: bool, max_file_bytes: u64) -> Resul
     };
     let mut archive = tar::Archive::new(reader);
     let mut out = Vec::new();
-    let entries = archive.entries().map_err(|e| Error::BadRequest(format!("layer tar: {e}")))?;
+    let entries = archive
+        .entries()
+        .map_err(|e| Error::BadRequest(format!("layer tar: {e}")))?;
     for entry in entries {
         let mut entry = entry.map_err(|e| Error::BadRequest(format!("layer tar entry: {e}")))?;
         let header = entry.header();
@@ -253,12 +316,22 @@ pub fn walk_layer(tar_bytes: &[u8], gzipped: bool, max_file_bytes: u64) -> Resul
             .to_string();
         let size = header.size().unwrap_or(0);
         if size > max_file_bytes {
-            out.push(LayerEntry { path, size, bytes: None });
+            out.push(LayerEntry {
+                path,
+                size,
+                bytes: None,
+            });
             continue;
         }
         let mut buf = Vec::with_capacity(size as usize);
-        entry.read_to_end(&mut buf).map_err(|e| Error::BadRequest(e.to_string()))?;
-        out.push(LayerEntry { path, size, bytes: Some(buf) });
+        entry
+            .read_to_end(&mut buf)
+            .map_err(|e| Error::BadRequest(e.to_string()))?;
+        out.push(LayerEntry {
+            path,
+            size,
+            bytes: Some(buf),
+        });
     }
     Ok(out)
 }
@@ -268,21 +341,35 @@ pub fn walk_layer(tar_bytes: &[u8], gzipped: bool, max_file_bytes: u64) -> Resul
 pub fn walk_docker_save(save_tar: &[u8]) -> Result<(Vec<String>, Vec<Vec<u8>>)> {
     let mut archive = tar::Archive::new(save_tar);
     let mut manifest: Option<serde_json::Value> = None;
-    let mut layer_tars: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
-    for entry in archive.entries().map_err(|e| Error::BadRequest(e.to_string()))? {
+    let mut layer_tars: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
+    for entry in archive
+        .entries()
+        .map_err(|e| Error::BadRequest(e.to_string()))?
+    {
         let mut entry = entry.map_err(|e| Error::BadRequest(e.to_string()))?;
-        let path = entry.path().map_err(|e| Error::BadRequest(e.to_string()))?.to_string_lossy().to_string();
+        let path = entry
+            .path()
+            .map_err(|e| Error::BadRequest(e.to_string()))?
+            .to_string_lossy()
+            .to_string();
         if path == "manifest.json" {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| Error::BadRequest(e.to_string()))?;
-            manifest = Some(serde_json::from_slice(&buf).map_err(|e| Error::BadRequest(e.to_string()))?);
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| Error::BadRequest(e.to_string()))?;
+            manifest =
+                Some(serde_json::from_slice(&buf).map_err(|e| Error::BadRequest(e.to_string()))?);
         } else if path.ends_with(".tar") {
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).map_err(|e| Error::BadRequest(e.to_string()))?;
+            entry
+                .read_to_end(&mut buf)
+                .map_err(|e| Error::BadRequest(e.to_string()))?;
             layer_tars.insert(path, buf);
         }
     }
-    let manifest = manifest.ok_or_else(|| Error::BadRequest("docker save tar without manifest.json".into()))?;
+    let manifest = manifest
+        .ok_or_else(|| Error::BadRequest("docker save tar without manifest.json".into()))?;
     let first = manifest
         .as_array()
         .and_then(|a| a.first())
@@ -290,7 +377,11 @@ pub fn walk_docker_save(save_tar: &[u8]) -> Result<(Vec<String>, Vec<Vec<u8>>)> 
     let tags: Vec<String> = first
         .get("RepoTags")
         .and_then(|t| t.as_array())
-        .map(|ts| ts.iter().filter_map(|t| t.as_str().map(|s| s.to_string())).collect())
+        .map(|ts| {
+            ts.iter()
+                .filter_map(|t| t.as_str().map(|s| s.to_string()))
+                .collect()
+        })
         .unwrap_or_default();
     let mut layers = Vec::new();
     if let Some(list) = first.get("Layers").and_then(|l| l.as_array()) {
@@ -307,7 +398,12 @@ pub fn walk_docker_save(save_tar: &[u8]) -> Result<(Vec<String>, Vec<Vec<u8>>)> 
 
 // ---------------- provenance ----------------
 
-pub fn file_provenance(image_ref: &str, image_digest: &str, layer_digest: &str, path: &str) -> serde_json::Value {
+pub fn file_provenance(
+    image_ref: &str,
+    image_digest: &str,
+    layer_digest: &str,
+    path: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "source": "oci",
         "image_ref": image_ref,
@@ -324,11 +420,32 @@ mod tests {
     #[test]
     fn parses_image_refs() {
         let r = parse_image_ref("alpine:3.20").unwrap();
-        assert_eq!((r.registry.as_str(), r.repository.as_str(), r.reference.as_str()), ("registry-1.docker.io", "library/alpine", "3.20"));
+        assert_eq!(
+            (
+                r.registry.as_str(),
+                r.repository.as_str(),
+                r.reference.as_str()
+            ),
+            ("registry-1.docker.io", "library/alpine", "3.20")
+        );
         let r = parse_image_ref("ghcr.io/org/img:1.0").unwrap();
-        assert_eq!((r.registry.as_str(), r.repository.as_str(), r.reference.as_str()), ("ghcr.io", "org/img", "1.0"));
+        assert_eq!(
+            (
+                r.registry.as_str(),
+                r.repository.as_str(),
+                r.reference.as_str()
+            ),
+            ("ghcr.io", "org/img", "1.0")
+        );
         let r = parse_image_ref("ubuntu").unwrap();
-        assert_eq!((r.registry.as_str(), r.repository.as_str(), r.reference.as_str()), ("registry-1.docker.io", "library/ubuntu", "latest"));
+        assert_eq!(
+            (
+                r.registry.as_str(),
+                r.repository.as_str(),
+                r.reference.as_str()
+            ),
+            ("registry-1.docker.io", "library/ubuntu", "latest")
+        );
         let r = parse_image_ref("localhost:5000/img:dev").unwrap();
         assert_eq!(r.registry, "localhost:5000");
         assert_eq!(r.reference, "dev");
@@ -357,11 +474,17 @@ mod tests {
 
     #[test]
     fn walks_layer_tar_gz() {
-        let tar = build_tar(&[("bin/busybox", b"\x7fELF\x02fake-elf"), ("etc/motd", b"hello")]);
+        let tar = build_tar(&[
+            ("bin/busybox", b"\x7fELF\x02fake-elf"),
+            ("etc/motd", b"hello"),
+        ]);
         let entries = walk_layer(&gzip(&tar), true, 1 << 20).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].path, "bin/busybox");
-        assert_eq!(entries[0].bytes.as_deref().unwrap()[..4], [0x7f, b'E', b'L', b'F']);
+        assert_eq!(
+            entries[0].bytes.as_deref().unwrap()[..4],
+            [0x7f, b'E', b'L', b'F']
+        );
     }
 
     #[test]
@@ -370,7 +493,10 @@ mod tests {
         let tar = build_tar(&[("big.bin", &big), ("small.bin", b"tiny")]);
         let entries = walk_layer(&tar, false, 1024).unwrap();
         assert_eq!(entries.len(), 2);
-        assert!(entries[0].bytes.is_none(), "big file must be TOO_LARGE-marked");
+        assert!(
+            entries[0].bytes.is_none(),
+            "big file must be TOO_LARGE-marked"
+        );
         assert_eq!(entries[1].bytes.as_deref(), Some(b"tiny".as_ref()));
     }
 

@@ -38,7 +38,13 @@ struct Roll {
 
 impl Roll {
     fn new() -> Roll {
-        Roll { window: [0; ROLL_WINDOW as usize], h1: 0, h2: 0, h3: 0, n: 0 }
+        Roll {
+            window: [0; ROLL_WINDOW as usize],
+            h1: 0,
+            h2: 0,
+            h3: 0,
+            n: 0,
+        }
     }
     fn update(&mut self, b: u8) -> u32 {
         let b = b as u32;
@@ -106,7 +112,11 @@ fn hash_with_block(data: &[u8], block_size: u32) -> (String, String, u32, u32, u
             }
         }
     }
-    let (tail1, tail2) = if rh != 0 { (bh1 & 0x3f, bh2 & 0x3f) } else { (last1, last2) };
+    let (tail1, tail2) = if rh != 0 {
+        (bh1 & 0x3f, bh2 & 0x3f)
+    } else {
+        (last1, last2)
+    };
     (hs1, hs2, tail1, tail2, rh)
 }
 

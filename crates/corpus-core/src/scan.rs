@@ -92,7 +92,9 @@ pub fn compile_bundle(sources: &[(String, String)]) -> Result<yara_x::Rules, Str
     let mut compiler = yara_x::Compiler::new();
     for (namespace, source) in sources {
         compiler.new_namespace(namespace);
-        compiler.add_source(source.as_str()).map_err(|e| e.to_string())?;
+        compiler
+            .add_source(source.as_str())
+            .map_err(|e| e.to_string())?;
     }
     Ok(compiler.build())
 }
@@ -123,7 +125,11 @@ pub fn scan_bytes(rules: &yara_x::Rules, bytes: &[u8]) -> ScanOutcome {
                 });
             }
             ScanOutcome {
-                status: if matches.is_empty() { ScanStatus::Clean } else { ScanStatus::Matched },
+                status: if matches.is_empty() {
+                    ScanStatus::Clean
+                } else {
+                    ScanStatus::Matched
+                },
                 matches,
                 duration_ms: started.elapsed().as_millis() as i64,
                 error_code: None,
@@ -133,7 +139,11 @@ pub fn scan_bytes(rules: &yara_x::Rules, bytes: &[u8]) -> ScanOutcome {
             let msg = err.to_string();
             let is_timeout = msg.to_lowercase().contains("timeout");
             ScanOutcome {
-                status: if is_timeout { ScanStatus::Timeout } else { ScanStatus::Error },
+                status: if is_timeout {
+                    ScanStatus::Timeout
+                } else {
+                    ScanStatus::Error
+                },
                 matches: Vec::new(),
                 duration_ms: started.elapsed().as_millis() as i64,
                 error_code: Some(msg),
@@ -169,7 +179,13 @@ mod tests {
         // migrations/0001_init.sql.
         assert_eq!(
             ScanCacheKey::COLUMNS,
-            ["tenant_id", "artifact_sha256", "rule_bundle_digest", "engine_version", "scan_config_digest"]
+            [
+                "tenant_id",
+                "artifact_sha256",
+                "rule_bundle_digest",
+                "engine_version",
+                "scan_config_digest"
+            ]
         );
         assert_eq!(scan_config_digest().len(), 64);
     }

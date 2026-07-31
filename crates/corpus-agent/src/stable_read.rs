@@ -5,7 +5,6 @@
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,23 +24,18 @@ pub struct StableReadResult {
     pub spool_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileIdentity {
-    dev: u64,
-    ino: u64,
-    size: u64,
-    mtime_ns: i128,
-    ctime_ns: i128,
-}
-
-fn identity(md: &std::fs::Metadata) -> FileIdentity {
-    use std::os::unix::fs::MetadataExt;
-    FileIdentity {
-        dev: md.dev(),
-        ino: md.ino(),
-        size: md.size(),
-        mtime_ns: md.mtime() as i128 * 1_000_000_000 + md.mtime_nsec() as i128,
-        ctime_ns: md.ctime() as i128 * 1_000_000_000 + md.ctime_nsec() as i128,
+fn identity_of(file: &std::fs::File) -> std::io::Result<crate::fileid::FileKey> {
+    #[cfg(unix)]
+    {
+        Ok(crate::fileid::file_key(&file.metadata()?))
+    }
+    #[cfg(windows)]
+    {
+        crate::fileid::key_for_file(file)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        Ok(crate::fileid::scan_key(&file.metadata()?))
     }
 }
 
@@ -70,7 +64,14 @@ pub fn stable_read(
 ) -> Result<StableReadResult, StableReadError> {
     let mut attempt = 0;
     loop {
-        match read_once(path, spool_dir, max_artifact_bytes, spool_free_bytes, mutation_hook, cipher) {
+        match read_once(
+            path,
+            spool_dir,
+            max_artifact_bytes,
+            spool_free_bytes,
+            mutation_hook,
+            cipher,
+        ) {
             Err(StableReadError::ChangedDuringRead) if attempt < retries => {
                 attempt += 1;
                 continue;
@@ -88,16 +89,11 @@ fn read_once(
     mutation_hook: MutationHook<'_>,
     cipher: Option<&crate::spool_crypto::SpoolCipher>,
 ) -> Result<StableReadResult, StableReadError> {
-    // Step 2: open without following unexpected symlinks (platform constant,
-    // never a hardcoded flag value).
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(open_nofollow_flag())
-        .open(path)
-        .map_err(|e| map_open_err(&e))?;
+    // Step 2: open without following unexpected symlinks/reparse points.
+    let mut file = open_nofollow(path).map_err(|e| map_open_err(&e))?;
 
     // Step 3: initial identity.
-    let before = identity(&file.metadata().map_err(|e| map_open_err(&e))?);
+    let before = identity_of(&file).map_err(|e| map_open_err(&e))?;
     if before.size > max_artifact_bytes {
         return Err(StableReadError::TooLarge { size: before.size });
     }
@@ -109,17 +105,7 @@ fn read_once(
     // configured (M6), spool bytes are AEAD ciphertext at rest; the hash
     // is always over plaintext.
     let spool_path = spool_dir.join(format!("spool-{}", uuid::Uuid::new_v4()));
-    let mut out = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600) // spool bytes are never world/group accessible (10.3)
-        .open(&spool_path)
-        .map_err(|e| StableReadError::Io(e.to_string()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&spool_path, std::fs::Permissions::from_mode(0o600));
-    }
+    let mut out = create_spool_file(&spool_path)?;
 
     let stream_prefix = cipher.map(|c| {
         let prefix = crate::spool_crypto::SpoolCipher::stream_prefix();
@@ -181,23 +167,69 @@ fn read_once(
     }
 
     // Step 5: re-stat the open object and compare (spec 10.5).
-    let after = identity(&file.metadata().map_err(|e| map_open_err(&e))?);
+    let after = identity_of(&file).map_err(|e| map_open_err(&e))?;
     if after != before {
         let _ = std::fs::remove_file(&spool_path);
         return Err(StableReadError::ChangedDuringRead);
     }
 
-    Ok(StableReadResult { sha256: hex::encode(hasher.finalize()), size: total, spool_path })
+    Ok(StableReadResult {
+        sha256: hex::encode(hasher.finalize()),
+        size: total,
+        spool_path,
+    })
 }
 
 #[cfg(unix)]
-fn open_nofollow_flag() -> i32 {
-    libc::O_NOFOLLOW
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
 }
 
+#[cfg(windows)]
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    // FILE_FLAG_OPEN_REPARSE_POINT: open the reparse point itself, never
+    // follow it (spec 10.5 step 2).
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    OpenOptions::new().read(true).open(path)
+}
+
+#[cfg(unix)]
+fn create_spool_file(path: &Path) -> Result<std::fs::File, StableReadError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let f = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600) // spool bytes are never world/group accessible (10.3)
+        .open(path)
+        .map_err(|e| StableReadError::Io(e.to_string()))?;
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    Ok(f)
+}
+
+/// Windows: spool files live under the agent-owned state dir; NTFS ACLs
+/// inherit from it (see run(): the dir is created by the service account).
+/// Encrypted at rest (M6) regardless of filesystem ACLs.
 #[cfg(not(unix))]
-fn open_nofollow_flag() -> i32 {
-    0
+fn create_spool_file(path: &Path) -> Result<std::fs::File, StableReadError> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| StableReadError::Io(e.to_string()))
 }
 
 #[cfg(test)]
@@ -230,6 +262,11 @@ mod tests {
             1 << 20,
             2,
             Some(&move || {
+                // Windows filesystem timestamps have ~10-15ms granularity:
+                // a content-identical rewrite inside the same tick is
+                // undetectable by (size, mtime) alone. Cross the tick.
+                #[cfg(windows)]
+                std::thread::sleep(std::time::Duration::from_millis(30));
                 std::fs::write(&t2, b"version two of the file!!").unwrap();
             }),
             None,
@@ -265,6 +302,11 @@ mod tests {
         assert_eq!(r.sha256, corpus_core::hash::sha256_hex(b"rewritten"));
     }
 
+    /// Unix-only: symlinks must be rejected, not followed. Windows
+    /// equivalent (junctions/reparse points) is covered by
+    /// FILE_FLAG_OPEN_REPARSE_POINT in open_nofollow; creating reparse
+    /// points in a test needs privileges, so there is no Windows twin.
+    #[cfg(unix)]
     #[test]
     fn symlinks_are_rejected_not_followed() {
         let dir = tempfile::tempdir().unwrap();
@@ -319,7 +361,16 @@ mod tests {
             Err(StableReadError::SpoolFull)
         ));
         assert_eq!(
-            stable_read(&dir.path().join("gone.bin"), spool.path(), 1 << 20, 1 << 20, 3, None, None).unwrap_err(),
+            stable_read(
+                &dir.path().join("gone.bin"),
+                spool.path(),
+                1 << 20,
+                1 << 20,
+                3,
+                None,
+                None
+            )
+            .unwrap_err(),
             StableReadError::DeletedBeforeRead
         );
     }

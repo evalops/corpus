@@ -51,7 +51,11 @@ pub async fn create_enrollment_token(
 /// Exchange a one-time enrollment token for an agent identity + bearer token.
 /// The response also carries a signed mTLS client cert for the agent
 /// listener — the bearer token is a legacy/dev credential only.
-pub async fn enroll(pool: &PgPool, ca: &crate::mtls::DeploymentCa, req: &EnrollRequest) -> Result<EnrollResponse> {
+pub async fn enroll(
+    pool: &PgPool,
+    ca: &crate::mtls::DeploymentCa,
+    req: &EnrollRequest,
+) -> Result<EnrollResponse> {
     let token_hash = hash_token(&req.enrollment_token);
     let row: Option<(Uuid,)> = sqlx::query_as(
         "UPDATE enrollment_token SET consumed_at = $2
@@ -63,12 +67,17 @@ pub async fn enroll(pool: &PgPool, ca: &crate::mtls::DeploymentCa, req: &EnrollR
     .bind(Utc::now())
     .fetch_optional(pool)
     .await?;
-    let (tenant_id,) = row.ok_or_else(|| Error::BadRequest("invalid, expired, or consumed enrollment token".into()))?;
+    let (tenant_id,) = row.ok_or_else(|| {
+        Error::BadRequest("invalid, expired, or consumed enrollment token".into())
+    })?;
 
     // Enrollment is a write path: the token's tenant must be active.
     let tenant = crate::tenant::get_tenant(pool, tenant_id).await?;
     if tenant.status != "active" {
-        return Err(Error::Forbidden(format!("tenant {} is {}", tenant.slug, tenant.status)));
+        return Err(Error::Forbidden(format!(
+            "tenant {} is {}",
+            tenant.slug, tenant.status
+        )));
     }
 
     let agent_id = Uuid::new_v4();
@@ -90,7 +99,8 @@ pub async fn enroll(pool: &PgPool, ca: &crate::mtls::DeploymentCa, req: &EnrollR
         .bind(agent_id)
         .execute(pool)
         .await?;
-    let (client_cert_pem, client_key_pem) = crate::mtls::sign_client_cert(ca, agent_id, crate::mtls::DEFAULT_TTL_DAYS)?;
+    let (client_cert_pem, client_key_pem) =
+        crate::mtls::sign_client_cert(ca, agent_id, crate::mtls::DEFAULT_TTL_DAYS)?;
     Ok(EnrollResponse {
         agent_id,
         agent_token,
@@ -103,8 +113,12 @@ pub async fn enroll(pool: &PgPool, ca: &crate::mtls::DeploymentCa, req: &EnrollR
 
 /// Issue a fresh client cert to an agent authenticated over mTLS
 /// (rotation; TTL restarts from now).
-pub fn renew_cert(ca: &crate::mtls::DeploymentCa, agent_id: Uuid) -> Result<crate::dto::RenewCertResponse> {
-    let (client_cert_pem, client_key_pem) = crate::mtls::sign_client_cert(ca, agent_id, crate::mtls::DEFAULT_TTL_DAYS)?;
+pub fn renew_cert(
+    ca: &crate::mtls::DeploymentCa,
+    agent_id: Uuid,
+) -> Result<crate::dto::RenewCertResponse> {
+    let (client_cert_pem, client_key_pem) =
+        crate::mtls::sign_client_cert(ca, agent_id, crate::mtls::DEFAULT_TTL_DAYS)?;
     Ok(crate::dto::RenewCertResponse {
         client_cert_pem,
         client_key_pem,
@@ -121,7 +135,11 @@ pub async fn authenticate_cert(pool: &PgPool, agent_id: Uuid) -> Result<AgentIde
             .await?;
     let (agent_id, tenant_id, host_name) =
         row.ok_or_else(|| Error::Unauthorized("unknown agent cert identity".into()))?;
-    Ok(AgentIdentity { agent_id, tenant_id, host_name })
+    Ok(AgentIdentity {
+        agent_id,
+        tenant_id,
+        host_name,
+    })
 }
 
 /// Resolve an agent bearer token to its identity. Legacy dev mode only —
@@ -139,7 +157,11 @@ pub async fn authenticate(pool: &PgPool, bearer: &str) -> Result<AgentIdentity> 
             .await?;
     let (agent_id, tenant_id, host_name) =
         row.ok_or_else(|| Error::Unauthorized("invalid agent token".into()))?;
-    Ok(AgentIdentity { agent_id, tenant_id, host_name })
+    Ok(AgentIdentity {
+        agent_id,
+        tenant_id,
+        host_name,
+    })
 }
 
 /// Store the latest heartbeat fields on the agent row (spec 10.11).
@@ -171,7 +193,14 @@ pub async fn heartbeat(pool: &PgPool, ident: &AgentIdentity, hb: &HeartbeatReque
 
 /// Persist a batch of coverage-gap capture attempts (spec 2.2 taxonomy).
 pub async fn record_gaps(pool: &PgPool, ident: &AgentIdentity, gaps: &[GapEvent]) -> Result<usize> {
-    record_gaps_scoped(pool, ident.tenant_id, &ident.host_name, ident.agent_id, gaps).await
+    record_gaps_scoped(
+        pool,
+        ident.tenant_id,
+        &ident.host_name,
+        ident.agent_id,
+        gaps,
+    )
+    .await
 }
 
 /// Dev-path gap reporting (no bearer, e.g. corpusctl OCI importer): host
@@ -279,7 +308,11 @@ pub async fn list_agents(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<AgentStat
     Ok(rows.into_iter().map(AgentRow::into_response).collect())
 }
 
-pub async fn agent_status(pool: &PgPool, tenant_id: Uuid, agent_id: Uuid) -> Result<AgentStatusResponse> {
+pub async fn agent_status(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    agent_id: Uuid,
+) -> Result<AgentStatusResponse> {
     let row = sqlx::query_as::<_, AgentRow>(&format!(
         "SELECT {AGENT_COLS} FROM agent WHERE tenant_id = $1 AND id = $2"
     ))

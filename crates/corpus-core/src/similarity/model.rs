@@ -33,7 +33,10 @@ pub mod edge_type {
 
 /// Strong edges form variant groups; weak edges stay searchable leads.
 pub fn merges_groups(edge_type: &str) -> bool {
-    matches!(edge_type, edge_type::EXACT_COPY | edge_type::NORMALIZED_EQUIVALENT)
+    matches!(
+        edge_type,
+        edge_type::EXACT_COPY | edge_type::NORMALIZED_EQUIVALENT
+    )
 }
 
 #[cfg(test)]

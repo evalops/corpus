@@ -127,7 +127,9 @@ impl StateDb {
                size INTEGER NOT NULL
              );",
         )?;
-        Ok(StateDb { conn: Mutex::new(conn) })
+        Ok(StateDb {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
@@ -139,7 +141,11 @@ impl StateDb {
     pub fn get_identity(&self, key: &str) -> Result<Option<String>> {
         Ok(self
             .conn()
-            .query_row("SELECT value FROM identity WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM identity WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .optional()?)
     }
 
@@ -180,8 +186,11 @@ impl StateDb {
             "UPDATE identity SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'agent_sequence'",
             [],
         )?;
-        let v: String =
-            conn.query_row("SELECT value FROM identity WHERE key = 'agent_sequence'", [], |r| r.get(0))?;
+        let v: String = conn.query_row(
+            "SELECT value FROM identity WHERE key = 'agent_sequence'",
+            [],
+            |r| r.get(0),
+        )?;
         Ok(v.parse()?)
     }
 
@@ -189,10 +198,20 @@ impl StateDb {
 
     /// Enqueue a candidate; dedupes against active rows for the same path.
     /// Returns the row id, or None if an identical active candidate exists.
-    pub fn enqueue(&self, path: &str, priority: i64, capture_reason: &str, debounce_ms: u64) -> Result<Option<i64>> {
+    pub fn enqueue(
+        &self,
+        path: &str,
+        priority: i64,
+        capture_reason: &str,
+        debounce_ms: u64,
+    ) -> Result<Option<i64>> {
         let t = now();
         let debounce_at = t + (debounce_ms as i64 / 1000);
-        let initial = if debounce_ms > 0 { states::DEBOUNCING } else { states::OBSERVED };
+        let initial = if debounce_ms > 0 {
+            states::DEBOUNCING
+        } else {
+            states::OBSERVED
+        };
         let conn = self.conn();
         conn.execute(
             "INSERT INTO candidate (path, priority, capture_reason, state, next_retry_at, created_at, updated_at)
@@ -375,7 +394,11 @@ impl StateDb {
     pub fn baseline_dir_done(&self, path: &str) -> Result<bool> {
         let done: Option<i64> = self
             .conn()
-            .query_row("SELECT done FROM baseline_dir WHERE path = ?1", params![path], |r| r.get(0))
+            .query_row(
+                "SELECT done FROM baseline_dir WHERE path = ?1",
+                params![path],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(done == Some(1))
     }
@@ -437,7 +460,8 @@ impl StateDb {
     /// heartbeat has been delivered.
     pub fn read_counters(&self) -> Result<Vec<(String, i64)>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare("SELECT outcome, count FROM outcome_counter ORDER BY outcome")?;
+        let mut stmt =
+            conn.prepare("SELECT outcome, count FROM outcome_counter ORDER BY outcome")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -483,7 +507,13 @@ impl StateDb {
     // ---------- seen files (poll sensor snapshot) ----------
 
     /// Returns true if the file is new or changed since the last snapshot.
-    pub fn seen_check_and_update(&self, path: &str, inode: i64, mtime_secs: i64, size: i64) -> Result<bool> {
+    pub fn seen_check_and_update(
+        &self,
+        path: &str,
+        inode: i64,
+        mtime_secs: i64,
+        size: i64,
+    ) -> Result<bool> {
         let conn = self.conn();
         let prev: Option<(i64, i64, i64)> = conn
             .query_row(
@@ -517,7 +547,10 @@ mod tests {
     #[test]
     fn state_machine_transitions_are_transactional_and_durable() {
         let (dir, db) = open_tmp();
-        let id = db.enqueue("/w/a.bin", priority::WRITTEN_OR_RENAMED, "close_write", 0).unwrap().unwrap();
+        let id = db
+            .enqueue("/w/a.bin", priority::WRITTEN_OR_RENAMED, "close_write", 0)
+            .unwrap()
+            .unwrap();
         assert_eq!(db.get(id).unwrap().unwrap().state, states::OBSERVED);
         db.transition(id, states::OPENING).unwrap();
         db.transition(id, states::COPYING_AND_HASHING).unwrap();
@@ -550,8 +583,10 @@ mod tests {
     #[test]
     fn priority_ordering_prefers_exec_over_baseline() {
         let (_dir, db) = open_tmp();
-        db.enqueue("/w/base.bin", priority::BASELINE, "baseline", 0).unwrap();
-        db.enqueue("/w/exec.bin", priority::EXEC_TARGET, "exec_open", 0).unwrap();
+        db.enqueue("/w/base.bin", priority::BASELINE, "baseline", 0)
+            .unwrap();
+        db.enqueue("/w/exec.bin", priority::EXEC_TARGET, "exec_open", 0)
+            .unwrap();
         let next = db.next_due().unwrap().unwrap();
         assert_eq!(next.path, "/w/exec.bin");
     }
@@ -569,8 +604,10 @@ mod tests {
     #[test]
     fn gaps_and_counters() {
         let (_dir, db) = open_tmp();
-        db.record_gap("baseline", "TOO_LARGE", None, Some("/w/big"), None, "{}").unwrap();
-        db.record_gap("baseline", "TOO_LARGE", None, Some("/w/big2"), None, "{}").unwrap();
+        db.record_gap("baseline", "TOO_LARGE", None, Some("/w/big"), None, "{}")
+            .unwrap();
+        db.record_gap("baseline", "TOO_LARGE", None, Some("/w/big2"), None, "{}")
+            .unwrap();
         let gaps = db.pending_gaps(10).unwrap();
         assert_eq!(gaps.len(), 2);
         // read_counters must NOT clear (heartbeat may fail after reading).
@@ -591,7 +628,10 @@ mod tests {
         db.defer(id, 99999).unwrap();
         db.defer(id, 99999).unwrap();
         let c = db.get(id).unwrap().unwrap();
-        assert_eq!(c.attempts, 0, "backpressure deferral must not burn attempts");
+        assert_eq!(
+            c.attempts, 0,
+            "backpressure deferral must not burn attempts"
+        );
         assert_eq!(c.next_retry_at, 99999);
         db.set_retry(id, 100000).unwrap();
         assert_eq!(db.get(id).unwrap().unwrap().attempts, 1);

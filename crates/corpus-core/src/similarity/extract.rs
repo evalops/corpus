@@ -91,7 +91,8 @@ pub fn extract(bytes: &[u8]) -> ExtractedFeatures {
             match goblin::mach::Mach::parse(bytes) {
                 Ok(goblin::mach::Mach::Binary(macho)) => extract_macho(&macho, &mut f),
                 Ok(goblin::mach::Mach::Fat(_)) => {
-                    f.parse_limitation = Some("fat macho: extraction covers thin binaries only".into())
+                    f.parse_limitation =
+                        Some("fat macho: extraction covers thin binaries only".into())
                 }
                 Err(e) => f.parse_limitation = Some(format!("macho parse: {e}")),
             }
@@ -125,12 +126,14 @@ pub fn pe_authentihash(bytes: &[u8]) -> Option<String> {
         _ => return None,
     };
     let mut ranges: Vec<(usize, usize)> = vec![
-        (opt + 64, opt + 68),       // CheckSum
+        (opt + 64, opt + 68),           // CheckSum
         (dir_base + 32, dir_base + 40), // certificate table directory entry
     ];
     if dir_base + 40 <= bytes.len() {
-        let cert_off = u32::from_le_bytes(bytes[dir_base + 32..dir_base + 36].try_into().ok()?) as usize;
-        let cert_len = u32::from_le_bytes(bytes[dir_base + 36..dir_base + 40].try_into().ok()?) as usize;
+        let cert_off =
+            u32::from_le_bytes(bytes[dir_base + 32..dir_base + 36].try_into().ok()?) as usize;
+        let cert_len =
+            u32::from_le_bytes(bytes[dir_base + 36..dir_base + 40].try_into().ok()?) as usize;
         if cert_len > 0 && cert_off < bytes.len() {
             ranges.push((cert_off, (cert_off + cert_len).min(bytes.len())));
         }
@@ -157,7 +160,10 @@ fn extract_pe(bytes: &[u8], pe: &goblin::pe::PE, f: &mut ExtractedFeatures) {
     f.arch = Some(format!("0x{:x}", pe.header.coff_header.machine));
 
     if let Some(ah) = pe_authentihash(bytes) {
-        f.normalized.push(NormalizedFeature { name: "authentihash".into(), hash: ah });
+        f.normalized.push(NormalizedFeature {
+            name: "authentihash".into(),
+            hash: ah,
+        });
     }
 
     if !pe.imports.is_empty() {
@@ -190,7 +196,9 @@ fn extract_pe(bytes: &[u8], pe: &goblin::pe::PE, f: &mut ExtractedFeatures) {
         .sections
         .iter()
         .map(|s| {
-            let name = String::from_utf8_lossy(&s.name).trim_end_matches('\0').to_string();
+            let name = String::from_utf8_lossy(&s.name)
+                .trim_end_matches('\0')
+                .to_string();
             let body = &bytes[s.pointer_to_raw_data as usize
                 ..(s.pointer_to_raw_data as usize + s.size_of_raw_data as usize).min(bytes.len())];
             format!(
@@ -214,14 +222,19 @@ fn extract_elf(_bytes: &[u8], elf: &goblin::elf::Elf, f: &mut ExtractedFeatures)
 
     // Build ID from .note.gnu.build-id.
     for (i, sh) in elf.section_headers.iter().enumerate() {
-        let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) else { continue };
+        let Some(name) = elf.shdr_strtab.get_at(sh.sh_name) else {
+            continue;
+        };
         if name != ".note.gnu.build-id" {
             continue;
         }
         let start = sh.sh_offset as usize;
         let end = (start + sh.sh_size as usize).min(_bytes.len());
         if let Some(id) = parse_gnu_build_id(&_bytes[start..end]) {
-            f.normalized.push(NormalizedFeature { name: "elf_build_id".into(), hash: id });
+            f.normalized.push(NormalizedFeature {
+                name: "elf_build_id".into(),
+                hash: id,
+            });
         }
         let _ = i;
     }
@@ -251,9 +264,9 @@ fn extract_elf(_bytes: &[u8], elf: &goblin::elf::Elf, f: &mut ExtractedFeatures)
         .section_headers
         .iter()
         .filter_map(|sh| {
-            elf.shdr_strtab.get_at(sh.sh_name).map(|name| {
-                format!("{name}:{}:{:x}:{}", sh.sh_size, sh.sh_flags, sh.sh_type)
-            })
+            elf.shdr_strtab
+                .get_at(sh.sh_name)
+                .map(|name| format!("{name}:{}:{:x}:{}", sh.sh_size, sh.sh_flags, sh.sh_type))
         })
         .collect();
     if !layout.is_empty() {
@@ -326,7 +339,9 @@ fn extract_macho(macho: &goblin::mach::MachO, f: &mut ExtractedFeatures) {
         .segments
         .iter()
         .map(|s| {
-            let name = String::from_utf8_lossy(&s.segname).trim_end_matches('\0').to_string();
+            let name = String::from_utf8_lossy(&s.segname)
+                .trim_end_matches('\0')
+                .to_string();
             format!("{name}:{}:{}", s.filesize, s.nsects)
         })
         .collect();

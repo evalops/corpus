@@ -48,9 +48,7 @@ pub fn classify(bytes: &[u8]) -> ArtifactClass {
             | [0xce, 0xfa, 0xed, 0xfe]
             | [0xcf, 0xfa, 0xed, 0xfe] => return ArtifactClass::MachO,
             // Mach-O universal (fat) binary.
-            [0xca, 0xfe, 0xba, 0xbe] | [0xbe, 0xba, 0xfe, 0xca] => {
-                return ArtifactClass::MachOFat
-            }
+            [0xca, 0xfe, 0xba, 0xbe] | [0xbe, 0xba, 0xfe, 0xca] => return ArtifactClass::MachOFat,
             _ => {}
         }
     }
@@ -106,9 +104,18 @@ mod tests {
 
     #[test]
     fn classifies_macho_variants() {
-        assert_eq!(classify(&[0xfe, 0xed, 0xfa, 0xcf, 0, 0]), ArtifactClass::MachO);
-        assert_eq!(classify(&[0xcf, 0xfa, 0xed, 0xfe, 0, 0]), ArtifactClass::MachO);
-        assert_eq!(classify(&[0xca, 0xfe, 0xba, 0xbe, 0, 0]), ArtifactClass::MachOFat);
+        assert_eq!(
+            classify(&[0xfe, 0xed, 0xfa, 0xcf, 0, 0]),
+            ArtifactClass::MachO
+        );
+        assert_eq!(
+            classify(&[0xcf, 0xfa, 0xed, 0xfe, 0, 0]),
+            ArtifactClass::MachO
+        );
+        assert_eq!(
+            classify(&[0xca, 0xfe, 0xba, 0xbe, 0, 0]),
+            ArtifactClass::MachOFat
+        );
     }
 
     #[test]

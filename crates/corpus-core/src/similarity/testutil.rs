@@ -38,10 +38,10 @@ pub fn build_pe(dll: &str, func: &str, body: &[u8], checksum: u32, cert: Option<
     w32(&mut b, opt + 64, checksum); // CheckSum (excluded from authentihash)
     w16(&mut b, opt + 68, 3); // subsystem console
     w32(&mut b, opt + 92, 16); // number of rva and sizes
-    // Data directories at opt+96: [1] import, [4] certificate.
+                               // Data directories at opt+96: [1] import, [4] certificate.
     w32(&mut b, opt + 96 + 8, 0x1000); // import RVA
     w32(&mut b, opt + 96 + 12, 0x28); // import size
-    // Section header at opt+0xe0.
+                                      // Section header at opt+0xe0.
     let sh = opt + 0xe0;
     b[sh..sh + 5].copy_from_slice(b".text");
     w32(&mut b, sh + 8, 0x200); // virtual size
@@ -55,7 +55,7 @@ pub fn build_pe(dll: &str, func: &str, body: &[u8], checksum: u32, cert: Option<
     w32(&mut b, raw, 0x1040); // OriginalFirstThunk (ILT RVA)
     w32(&mut b, raw + 12, 0x1060); // Name RVA
     w32(&mut b, raw + 16, 0x1080); // FirstThunk (IAT RVA)
-    // ILT at RVA 0x1040 -> raw 0x240; IAT at 0x1080 -> raw 0x280.
+                                   // ILT at RVA 0x1040 -> raw 0x240; IAT at 0x1080 -> raw 0x280.
     w32(&mut b, raw + 0x40, 0x10a0); // hint/name RVA
     w32(&mut b, raw + 0x80, 0x10a0);
     // DLL name at RVA 0x1060 -> raw 0x260.
@@ -135,11 +135,24 @@ mod tests {
         let pe = build_pe("KERNEL32.dll", "ExitProcess", b"body-v1", 0, None);
         let f = extract(&pe);
         assert_eq!(f.format, "pe", "goblin must parse the crafted PE");
-        let imphash = f.normalized.iter().find(|n| n.name == "imphash").expect("imphash present");
-        let other = build_pe("KERNEL32.dll", "ExitProcess", b"body-v2-different", 0xdead, None);
+        let imphash = f
+            .normalized
+            .iter()
+            .find(|n| n.name == "imphash")
+            .expect("imphash present");
+        let other = build_pe(
+            "KERNEL32.dll",
+            "ExitProcess",
+            b"body-v2-different",
+            0xdead,
+            None,
+        );
         let f2 = extract(&other);
         let imphash2 = f2.normalized.iter().find(|n| n.name == "imphash").unwrap();
-        assert_eq!(imphash.hash, imphash2.hash, "same imports -> same imphash despite body/checksum change");
+        assert_eq!(
+            imphash.hash, imphash2.hash,
+            "same imports -> same imphash despite body/checksum change"
+        );
     }
 
     #[test]
@@ -147,7 +160,13 @@ mod tests {
         let base = build_pe("KERNEL32.dll", "ExitProcess", b"body", 0, None);
         let with_checksum = build_pe("KERNEL32.dll", "ExitProcess", b"body", 0xcafebabe, None);
         assert_eq!(pe_authentihash(&base), pe_authentihash(&with_checksum));
-        let with_cert = build_pe("KERNEL32.dll", "ExitProcess", b"body", 0, Some(b"FAKE-CERTIFICATE-BYTES"));
+        let with_cert = build_pe(
+            "KERNEL32.dll",
+            "ExitProcess",
+            b"body",
+            0,
+            Some(b"FAKE-CERTIFICATE-BYTES"),
+        );
         assert_eq!(pe_authentihash(&base), pe_authentihash(&with_cert));
         let different_body = build_pe("KERNEL32.dll", "ExitProcess", b"body!", 0, None);
         assert_ne!(pe_authentihash(&base), pe_authentihash(&different_body));
@@ -174,7 +193,11 @@ mod tests {
         let elf = build_elf(&id, "GCC: (GNU) 13.2.0");
         let f = extract(&elf);
         assert_eq!(f.format, "elf", "goblin must parse the crafted ELF");
-        let bid = f.normalized.iter().find(|n| n.name == "elf_build_id").expect("build id");
+        let bid = f
+            .normalized
+            .iter()
+            .find(|n| n.name == "elf_build_id")
+            .expect("build id");
         assert_eq!(bid.hash, "deadbeef");
         assert_eq!(f.compiler_hint.as_deref(), Some("GCC: (GNU) 13.2.0"));
         assert!(f.section_layout.is_some());
@@ -203,16 +226,21 @@ mod real_binary_tests {
         let mut cmd = std::process::Command::new("cc");
         cmd.arg("-O1").arg(&src).arg("-o").arg(&bin);
         #[cfg(target_os = "macos")]
-        cmd.arg("-target").arg(if std::env::consts::ARCH == "aarch64" {
-            "arm64-apple-macos11"
-        } else {
-            "x86_64-apple-macos10.15"
-        });
+        cmd.arg("-target")
+            .arg(if std::env::consts::ARCH == "aarch64" {
+                "arm64-apple-macos11"
+            } else {
+                "x86_64-apple-macos10.15"
+            });
         let status = cmd.status().unwrap();
         assert!(status.success());
         let bytes = std::fs::read(&bin).unwrap();
         let f = crate::similarity::extract::extract(&bytes);
-        assert!(f.parse_limitation.is_none(), "parse failed: {:?}", f.parse_limitation);
+        assert!(
+            f.parse_limitation.is_none(),
+            "parse failed: {:?}",
+            f.parse_limitation
+        );
         let import_hash = f.normalized.iter().find(|n| n.name.contains("import_hash"));
         assert!(
             import_hash.is_some(),

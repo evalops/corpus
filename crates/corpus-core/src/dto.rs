@@ -302,8 +302,6 @@ pub struct VariantExpansion {
     pub weak_leads: Vec<SimilarEdgeView>,
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusArtifact {
     pub artifact_id: Uuid,

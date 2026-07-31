@@ -48,16 +48,38 @@ pub fn run_baseline(
             }
             if let Some(limit) = stop_after_dirs {
                 if dirs_completed >= limit {
-                    return Ok(BaselineReport { dirs_completed, dirs_total, candidates_enqueued: enqueued });
+                    return Ok(BaselineReport {
+                        dirs_completed,
+                        dirs_total,
+                        candidates_enqueued: enqueued,
+                    });
                 }
             }
-            enqueued += enqueue_tree(db, &entry, exclusions, priority::BASELINE, "baseline", debounce_ms)?;
+            enqueued += enqueue_tree(
+                db,
+                &entry,
+                exclusions,
+                priority::BASELINE,
+                "baseline",
+                debounce_ms,
+            )?;
             db.mark_baseline_dir(&key, true)?;
             dirs_completed += 1;
         }
     }
-    db.set_identity("baseline_state", if dirs_completed == dirs_total { "complete" } else { "incomplete" })?;
-    Ok(BaselineReport { dirs_completed, dirs_total, candidates_enqueued: enqueued })
+    db.set_identity(
+        "baseline_state",
+        if dirs_completed == dirs_total {
+            "complete"
+        } else {
+            "incomplete"
+        },
+    )?;
+    Ok(BaselineReport {
+        dirs_completed,
+        dirs_total,
+        candidates_enqueued: enqueued,
+    })
 }
 
 /// Walk one tree and enqueue regular files, returning the count enqueued.
@@ -70,7 +92,11 @@ fn enqueue_tree(
     debounce_ms: u64,
 ) -> Result<usize> {
     let mut n = 0;
-    for entry in walkdir::WalkDir::new(path).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+    for entry in walkdir::WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if !entry.file_type().is_file() {
             continue;
         }
@@ -94,10 +120,13 @@ pub fn reconcile_scan(
     exclusions: &[String],
     debounce_ms: u64,
 ) -> Result<usize> {
-    use std::os::unix::fs::MetadataExt;
     let mut n = 0;
     for root in roots {
-        for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
             if !entry.file_type().is_file() {
                 continue;
             }
@@ -110,8 +139,15 @@ pub fn reconcile_scan(
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            if db.seen_check_and_update(&s, md.ino() as i64, md.mtime(), md.size() as i64)?
-                && db.enqueue(&s, priority::RECONCILIATION, "reconcile_scan", debounce_ms)?.is_some()
+            let key = crate::fileid::scan_key(&md);
+            if db.seen_check_and_update(
+                &s,
+                key.index as i64,
+                (key.mtime_ns / 1_000_000_000) as i64,
+                key.size as i64,
+            )? && db
+                .enqueue(&s, priority::RECONCILIATION, "reconcile_scan", debounce_ms)?
+                .is_some()
             {
                 n += 1;
             }
@@ -145,7 +181,10 @@ mod tests {
         // "Crash" after the first top-level dir.
         let r1 = run_baseline(&db, &[root.path().to_path_buf()], &[], 0, Some(1)).unwrap();
         assert_eq!(r1.dirs_completed, 1);
-        assert_eq!(r1.dirs_total, 2, "walk stopped early; total counts only entries seen");
+        assert_eq!(
+            r1.dirs_total, 2,
+            "walk stopped early; total counts only entries seen"
+        );
         // The completed dir's candidates were fully processed before the crash.
         while let Some(c) = db.lease_next_due(0).unwrap() {
             db.transition(c.id, states::COMPLETE).unwrap();
@@ -159,7 +198,10 @@ mod tests {
         let db = StateDb::open(&db_dir.path().join("s.db")).unwrap();
         let r2 = run_baseline(&db, &[root.path().to_path_buf()], &[], 0, None).unwrap();
         assert_eq!(r2.dirs_completed, 3);
-        assert_eq!(r2.candidates_enqueued, 4, "only dirs b and c may be enqueued");
+        assert_eq!(
+            r2.candidates_enqueued, 4,
+            "only dirs b and c may be enqueued"
+        );
         assert_eq!(db.queue_depth().unwrap(), 4);
         assert_eq!(
             db.get_identity("baseline_state").unwrap().as_deref(),

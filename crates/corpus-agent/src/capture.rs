@@ -43,7 +43,15 @@ fn spool_used_bytes(spool_dir: &Path) -> u64 {
         .sum()
 }
 
-fn record_gap(db: &StateDb, reason: &str, outcome: &str, sha: Option<&str>, path: Option<&str>, code: Option<&str>, detail: &str) {
+fn record_gap(
+    db: &StateDb,
+    reason: &str,
+    outcome: &str,
+    sha: Option<&str>,
+    path: Option<&str>,
+    code: Option<&str>,
+    detail: &str,
+) {
     if let Err(e) = db.record_gap(reason, outcome, sha, path, code, detail) {
         tracing::error!(error = %e, "failed to record gap locally");
     }
@@ -64,7 +72,11 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
 
     // OPENING + COPYING_AND_HASHING via the stable reader (spec 10.5).
     if state == states::OPENING || state == states::COPYING_AND_HASHING {
-        let spool_free = rt.cfg.limits.max_spool_bytes.saturating_sub(spool_used_bytes(&rt.cfg.spool_dir));
+        let spool_free = rt
+            .cfg
+            .limits
+            .max_spool_bytes
+            .saturating_sub(spool_used_bytes(&rt.cfg.spool_dir));
         db.transition(cand.id, states::COPYING_AND_HASHING)?;
         let spool_dir = rt.cfg.spool_dir.clone();
         let read_path = path.clone();
@@ -72,13 +84,26 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
         let retries = rt.cfg.limits.stable_read_retries;
         let spool_cipher = rt.spool_cipher.clone();
         let outcome = tokio::task::spawn_blocking(move || {
-            stable_read::stable_read(&read_path, &spool_dir, max_bytes, spool_free, retries, None, spool_cipher.as_deref())
+            stable_read::stable_read(
+                &read_path,
+                &spool_dir,
+                max_bytes,
+                spool_free,
+                retries,
+                None,
+                spool_cipher.as_deref(),
+            )
         })
         .await?;
 
         match outcome {
             Ok(r) => {
-                db.set_hashed(cand.id, &r.sha256, r.size as i64, &r.spool_path.to_string_lossy())?;
+                db.set_hashed(
+                    cand.id,
+                    &r.sha256,
+                    r.size as i64,
+                    &r.spool_path.to_string_lossy(),
+                )?;
             }
             Err(err) => {
                 let outcome_name = match &err {
@@ -97,7 +122,10 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                         if cand.attempts >= max_attempts {
                             OUTCOME_UPLOAD_FAILED
                         } else {
-                            db.set_retry(cand.id, chrono::Utc::now().timestamp() + backoff_secs(cand.attempts))?;
+                            db.set_retry(
+                                cand.id,
+                                chrono::Utc::now().timestamp() + backoff_secs(cand.attempts),
+                            )?;
                             return Ok(());
                         }
                     }
@@ -106,7 +134,15 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                     StableReadError::TooLarge { size } => format!("{{\"size_bytes\":{size}}}"),
                     other => format!("{{\"error\":{other:?}}}"),
                 };
-                record_gap(db, &cand.capture_reason, outcome_name, None, Some(&cand.path), None, &detail);
+                record_gap(
+                    db,
+                    &cand.capture_reason,
+                    outcome_name,
+                    None,
+                    Some(&cand.path),
+                    None,
+                    &detail,
+                );
                 db.finish_gap(cand.id, outcome_name)?;
                 return Ok(());
             }
@@ -122,7 +158,10 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
     // Crash-resume for post-announce states: the server already has the
     // evidence (dedup-hit announce records occurrence + capture attempt);
     // just finish locally. These states must never strand a candidate.
-    if matches!(cand.state.as_str(), states::DEDUP_HIT | states::OCCURRENCE_QUEUED) {
+    if matches!(
+        cand.state.as_str(),
+        states::DEDUP_HIT | states::OCCURRENCE_QUEUED
+    ) {
         db.transition(cand.id, states::COMPLETE)?;
         if let Some(p) = &cand.spool_path {
             let _ = std::fs::remove_file(p);
@@ -132,7 +171,11 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
 
     let sha256 = match &cand.sha256 {
         Some(s) => s.clone(),
-        None => anyhow::bail!("candidate {} in state {} without sha256", cand.id, cand.state),
+        None => anyhow::bail!(
+            "candidate {} in state {} without sha256",
+            cand.id,
+            cand.state
+        ),
     };
     let size = cand.size_bytes.unwrap_or(0);
     let spool_path = cand.spool_path.clone().map(PathBuf::from);
@@ -145,7 +188,10 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
         path: cand.path.clone(),
         observed_at: chrono::Utc::now(),
         file_size: size,
-        file_mtime: std::fs::metadata(&path).and_then(|m| m.modified()).ok().map(chrono::DateTime::from),
+        file_mtime: std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .map(chrono::DateTime::from),
         capture_reason: cand.capture_reason.clone(),
     };
 
@@ -154,12 +200,20 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
     // fresh upload session is allocated when bytes are still required.
     if matches!(
         cand.state.as_str(),
-        states::HASHED | states::ANNOUNCED | states::UPLOAD_REQUIRED | states::UPLOADING | states::FINALIZING
+        states::HASHED
+            | states::ANNOUNCED
+            | states::UPLOAD_REQUIRED
+            | states::UPLOADING
+            | states::FINALIZING
     ) {
         let seq = db.next_sequence()?;
         let ann = rt
             .uploader
-            .announce(&AnnounceRequest { sha256: sha256.clone(), size_bytes: size, occurrence: Some(occ(seq)) })
+            .announce(&AnnounceRequest {
+                sha256: sha256.clone(),
+                size_bytes: size,
+                occurrence: Some(occ(seq)),
+            })
             .await;
         let ann = match ann {
             Ok(a) => a,
@@ -181,14 +235,24 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
             AnnounceDisposition::UploadRequired => {
                 db.transition(cand.id, states::UPLOAD_REQUIRED)?;
                 let Some(upload_id) = ann.upload_id else {
-                    return retry_or_fail(db, &cand, max_attempts, "UPLOAD_REQUIRED without upload_id".into());
+                    return retry_or_fail(
+                        db,
+                        &cand,
+                        max_attempts,
+                        "UPLOAD_REQUIRED without upload_id".into(),
+                    );
                 };
                 db.set_identity(&format!("upload_id:{}", cand.id), &upload_id.to_string())?;
 
                 // UPLOADING.
                 db.transition(cand.id, states::UPLOADING)?;
                 let Some(spool) = spool_path.as_ref() else {
-                    return retry_or_fail(db, &cand, max_attempts, "missing spool path at UPLOADING".into());
+                    return retry_or_fail(
+                        db,
+                        &cand,
+                        max_attempts,
+                        "missing spool path at UPLOADING".into(),
+                    );
                 };
                 let raw = std::fs::read(spool)?;
                 let bytes = match &rt.spool_cipher {
@@ -211,7 +275,7 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                         size_bytes: size,
                         occurrence: Some(occ(seq)),
                         scope: None,
-                        provenance: None,
+                        provenance: ads_provenance(&path),
                     })
                     .await;
                 match fin {
@@ -225,12 +289,22 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                         }
                         return Ok(());
                     }
-                    Err(e) => return retry_or_fail(&rt.db, &cand, max_attempts, format!("finalize: {e}")),
+                    Err(e) => {
+                        return retry_or_fail(&rt.db, &cand, max_attempts, format!("finalize: {e}"))
+                    }
                 }
             }
             other => {
                 let name = format!("{other:?}");
-                record_gap(db, &cand.capture_reason, &name, Some(&sha256), Some(&cand.path), None, "{}");
+                record_gap(
+                    db,
+                    &cand.capture_reason,
+                    &name,
+                    Some(&sha256),
+                    Some(&cand.path),
+                    None,
+                    "{}",
+                );
                 db.finish_gap(cand.id, &name)?;
                 return Ok(());
             }
@@ -239,14 +313,42 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
     Ok(())
 }
 
+/// ADS metadata (Windows): non-default streams are recorded as queryable
+/// occurrence provenance. None elsewhere.
+#[cfg(target_os = "windows")]
+fn ads_provenance(path: &Path) -> Option<serde_json::Value> {
+    let ads = crate::sensors::ads::list_ads(path);
+    if ads.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({"ads": ads}))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ads_provenance(_path: &Path) -> Option<serde_json::Value> {
+    None
+}
+
 fn retry_or_fail(db: &StateDb, cand: &Candidate, max_attempts: i64, why: String) -> Result<()> {
     tracing::warn!(path = %cand.path, error = %why, attempts = cand.attempts, "capture step failed");
     if cand.attempts >= max_attempts {
         let sha = cand.sha256.as_deref();
-        record_gap(db, &cand.capture_reason, OUTCOME_UPLOAD_FAILED, sha, Some(&cand.path), None, &format!("{{\"error\":\"{why}\"}}"));
+        record_gap(
+            db,
+            &cand.capture_reason,
+            OUTCOME_UPLOAD_FAILED,
+            sha,
+            Some(&cand.path),
+            None,
+            &format!("{{\"error\":\"{why}\"}}"),
+        );
         db.finish_gap(cand.id, OUTCOME_UPLOAD_FAILED)?;
     } else {
-        db.set_retry(cand.id, chrono::Utc::now().timestamp() + backoff_secs(cand.attempts))?;
+        db.set_retry(
+            cand.id,
+            chrono::Utc::now().timestamp() + backoff_secs(cand.attempts),
+        )?;
     }
     Ok(())
 }
@@ -255,7 +357,9 @@ fn retry_or_fail(db: &StateDb, cand: &Candidate, max_attempts: i64, why: String)
 /// A per-candidate renewal task keeps the lease alive while processing so
 /// a slow capture (large artifact, slow disk) is never leased twice.
 pub async fn worker_loop(rt: Arc<AgentRuntime>) {
-    let sem = Arc::new(tokio::sync::Semaphore::new(rt.cfg.limits.max_concurrent_reads));
+    let sem = Arc::new(tokio::sync::Semaphore::new(
+        rt.cfg.limits.max_concurrent_reads,
+    ));
     loop {
         match rt.db.lease_next_due(120) {
             Ok(Some(cand)) => {
@@ -327,8 +431,12 @@ mod tests {
     /// server. Post-announce states must COMPLETE without any network call.
     async fn resume_after_crash(dir: &tempfile::TempDir, state: &str) {
         let (rt, db) = test_runtime(dir, 1 << 20);
-        let id = db.enqueue("/w/resume.bin", priority::BASELINE, "baseline", 0).unwrap().unwrap();
-        db.set_hashed(id, "abc123", 10, "/nonexistent-spool").unwrap();
+        let id = db
+            .enqueue("/w/resume.bin", priority::BASELINE, "baseline", 0)
+            .unwrap()
+            .unwrap();
+        db.set_hashed(id, "abc123", 10, "/nonexistent-spool")
+            .unwrap();
         db.transition(id, state).unwrap();
         let cfg = rt.cfg.clone();
         drop(db);
@@ -374,8 +482,14 @@ mod tests {
         let cand = db.get(id).unwrap().unwrap();
         process_candidate(&rt, &cand).await.unwrap();
         let after = db.get(id).unwrap().unwrap();
-        assert_eq!(after.attempts, 0, "spool backpressure must not burn attempts");
+        assert_eq!(
+            after.attempts, 0,
+            "spool backpressure must not burn attempts"
+        );
         assert_ne!(after.state, states::GAP_RECORDED);
-        assert!(db.pending_gaps(10).unwrap().is_empty(), "no gap for a temporary condition");
+        assert!(
+            db.pending_gaps(10).unwrap().is_empty(),
+            "no gap for a temporary condition"
+        );
     }
 }

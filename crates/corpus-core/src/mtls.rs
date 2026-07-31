@@ -34,7 +34,9 @@ fn ca_params() -> Result<rcgen::CertificateParams> {
     let mut params = rcgen::CertificateParams::new(vec!["corpus-deployment-ca".to_string()])
         .map_err(|e| Error::BadRequest(e.to_string()))?;
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    params.distinguished_name.push(rcgen::DnType::CommonName, "Corpus Deployment CA");
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "Corpus Deployment CA");
     Ok(params)
 }
 
@@ -56,7 +58,11 @@ pub fn load_or_create_ca(dir: &Path, extra_sans: &[String]) -> Result<Deployment
         let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
 
-    if ca_cert_path.exists() && ca_key_path.exists() && server_cert_path.exists() && server_key_path.exists() {
+    if ca_cert_path.exists()
+        && ca_key_path.exists()
+        && server_cert_path.exists()
+        && server_key_path.exists()
+    {
         return Ok(DeploymentCa {
             cert_pem: std::fs::read_to_string(&ca_cert_path)?,
             key_pem: std::fs::read_to_string(&ca_key_path)?,
@@ -71,14 +77,23 @@ pub fn load_or_create_ca(dir: &Path, extra_sans: &[String]) -> Result<Deployment
         "generating NEW deployment CA for mTLS agent auth; agents enrolled before a CA rotation must re-enroll"
     );
     let ca_key = rcgen::KeyPair::generate().map_err(|e| Error::BadRequest(e.to_string()))?;
-    let ca_cert = ca_params()?.self_signed(&ca_key).map_err(|e| Error::BadRequest(e.to_string()))?;
+    let ca_cert = ca_params()?
+        .self_signed(&ca_key)
+        .map_err(|e| Error::BadRequest(e.to_string()))?;
 
     // Server certificate for the agent listener (SANs cover local dev).
     let server_key = rcgen::KeyPair::generate().map_err(|e| Error::BadRequest(e.to_string()))?;
-    let mut sans = vec!["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()];
+    let mut sans = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
     sans.extend(extra_sans.iter().cloned());
-    let mut params = rcgen::CertificateParams::new(sans).map_err(|e| Error::BadRequest(e.to_string()))?;
-    params.distinguished_name.push(rcgen::DnType::CommonName, "corpus-server");
+    let mut params =
+        rcgen::CertificateParams::new(sans).map_err(|e| Error::BadRequest(e.to_string()))?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, "corpus-server");
     params.not_after = expiry(365);
     let server_cert_pem = params
         .signed_by(&server_key, &ca_cert, &ca_key)
@@ -103,20 +118,31 @@ pub fn load_or_create_ca(dir: &Path, extra_sans: &[String]) -> Result<Deployment
 }
 
 fn load_ca_cert(ca: &DeploymentCa) -> Result<rcgen::Certificate> {
-    let key = rcgen::KeyPair::from_pem(&ca.key_pem).map_err(|e| Error::BadRequest(e.to_string()))?;
+    let key =
+        rcgen::KeyPair::from_pem(&ca.key_pem).map_err(|e| Error::BadRequest(e.to_string()))?;
     let params = rcgen::CertificateParams::from_ca_cert_pem(&ca.cert_pem)
         .map_err(|e| Error::BadRequest(format!("reload CA cert: {e}")))?;
-    params.self_signed(&key).map_err(|e| Error::BadRequest(e.to_string()))
+    params
+        .self_signed(&key)
+        .map_err(|e| Error::BadRequest(e.to_string()))
 }
 
 /// Issue a short-lived client certificate for an enrolled agent.
 /// Returns (cert_pem, key_pem). CN = agent UUID.
-pub fn sign_client_cert(ca: &DeploymentCa, agent_id: Uuid, ttl_days: u32) -> Result<(String, String)> {
+pub fn sign_client_cert(
+    ca: &DeploymentCa,
+    agent_id: Uuid,
+    ttl_days: u32,
+) -> Result<(String, String)> {
     let ca_cert = load_ca_cert(ca)?;
-    let ca_key = rcgen::KeyPair::from_pem(&ca.key_pem).map_err(|e| Error::BadRequest(e.to_string()))?;
+    let ca_key =
+        rcgen::KeyPair::from_pem(&ca.key_pem).map_err(|e| Error::BadRequest(e.to_string()))?;
     let agent_key = rcgen::KeyPair::generate().map_err(|e| Error::BadRequest(e.to_string()))?;
-    let mut params = rcgen::CertificateParams::new(vec![agent_id.to_string()]).map_err(|e| Error::BadRequest(e.to_string()))?;
-    params.distinguished_name.push(rcgen::DnType::CommonName, agent_id.to_string());
+    let mut params = rcgen::CertificateParams::new(vec![agent_id.to_string()])
+        .map_err(|e| Error::BadRequest(e.to_string()))?;
+    params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, agent_id.to_string());
     params.not_after = expiry(ttl_days);
     let pem = params
         .signed_by(&agent_key, &ca_cert, &ca_key)
@@ -130,7 +156,10 @@ fn pem_der(pem: &str) -> Result<Vec<u8>> {
     let certs: Vec<_> = rustls_pemfile::certs(&mut reader)
         .collect::<std::result::Result<_, _>>()
         .map_err(|e| Error::BadRequest(format!("pem: {e}")))?;
-    let first = certs.into_iter().next().ok_or_else(|| Error::BadRequest("empty pem".into()))?;
+    let first = certs
+        .into_iter()
+        .next()
+        .ok_or_else(|| Error::BadRequest("empty pem".into()))?;
     Ok(first.to_vec())
 }
 
@@ -139,10 +168,15 @@ fn pem_key_der(pem: &str) -> Result<rustls::pki_types::PrivatePkcs8KeyDer<'stati
     let keys: Vec<_> = rustls_pemfile::pkcs8_private_keys(&mut reader)
         .collect::<std::result::Result<_, _>>()
         .map_err(|e| Error::BadRequest(format!("key pem: {e}")))?;
-    keys.into_iter().next().ok_or_else(|| Error::BadRequest("no pkcs8 key in pem".into()))
+    keys.into_iter()
+        .next()
+        .ok_or_else(|| Error::BadRequest("no pkcs8 key in pem".into()))
 }
 
-fn cert_chain(cert_pem: &str, ca_pem: &str) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
+fn cert_chain(
+    cert_pem: &str,
+    ca_pem: &str,
+) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
     Ok(vec![
         rustls::pki_types::CertificateDer::from(pem_der(cert_pem)?),
         rustls::pki_types::CertificateDer::from(pem_der(ca_pem)?),
@@ -168,9 +202,10 @@ pub fn install_provider() {
 /// signed by the deployment CA.
 pub fn server_config(ca: &DeploymentCa) -> Result<rustls::ServerConfig> {
     install_provider();
-    let verifier = rustls::server::WebPkiClientVerifier::builder(std::sync::Arc::new(ca_roots(&ca.cert_pem)?))
-        .build()
-        .map_err(|e| Error::BadRequest(format!("client verifier: {e}")))?;
+    let verifier =
+        rustls::server::WebPkiClientVerifier::builder(std::sync::Arc::new(ca_roots(&ca.cert_pem)?))
+            .build()
+            .map_err(|e| Error::BadRequest(format!("client verifier: {e}")))?;
     let chain = cert_chain(&ca.server_cert_pem, &ca.cert_pem)?;
     let key = rustls::pki_types::PrivateKeyDer::Pkcs8(pem_key_der(&ca.server_key_pem)?);
     let config = rustls::ServerConfig::builder()
@@ -224,7 +259,10 @@ mod tests {
         let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(client_cfg.clone()));
         let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
         let client = connector
-            .connect(rustls::pki_types::ServerName::try_from("localhost").unwrap(), stream)
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                stream,
+            )
             .await;
         let server = accept.await.unwrap();
         (client.is_ok(), server.is_ok())

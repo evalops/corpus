@@ -95,16 +95,31 @@ async fn insert_capture_attempt<'e>(
 
 /// Host/agent/reason triple for capture-attempt bookkeeping, derived from
 /// the occurrence when present, else from intel provenance.
-fn attempt_meta<'a>(occ: Option<&'a OccurrenceInfo>, provenance: Option<&'a serde_json::Value>) -> (String, Uuid, chrono::DateTime<Utc>, String, Option<&'a str>) {
+fn attempt_meta<'a>(
+    occ: Option<&'a OccurrenceInfo>,
+    provenance: Option<&'a serde_json::Value>,
+) -> (String, Uuid, chrono::DateTime<Utc>, String, Option<&'a str>) {
     match occ {
-        Some(o) => (o.host_name.clone(), o.agent_id, o.observed_at, o.capture_reason.clone(), Some(o.path.as_str())),
+        Some(o) => (
+            o.host_name.clone(),
+            o.agent_id,
+            o.observed_at,
+            o.capture_reason.clone(),
+            Some(o.path.as_str()),
+        ),
         None => {
             let source = provenance
                 .and_then(|p| p.get("source").and_then(|s| s.as_str()))
                 .unwrap_or("intel-import")
                 .to_string();
             let path = provenance.and_then(|p| p.get("path").and_then(|s| s.as_str()));
-            (source, Uuid::nil(), Utc::now(), "intel_import".to_string(), path)
+            (
+                source,
+                Uuid::nil(),
+                Utc::now(),
+                "intel_import".to_string(),
+                path,
+            )
         }
     }
 }
@@ -112,7 +127,11 @@ fn attempt_meta<'a>(occ: Option<&'a OccurrenceInfo>, provenance: Option<&'a serd
 /// Phase 1: dedup check scoped to the tenant. A dedup hit still records the
 /// occurrence and capture attempt (spec 11.1) — endpoint evidence is never
 /// skipped.
-pub async fn announce(pool: &PgPool, tenant_id: Uuid, req: &AnnounceRequest) -> Result<AnnounceResponse> {
+pub async fn announce(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    req: &AnnounceRequest,
+) -> Result<AnnounceResponse> {
     let sha_raw = hash::hex_to_raw(&req.sha256)
         .map_err(|_| Error::BadRequest(format!("invalid sha256 hex: {:?}", req.sha256)))?;
 
@@ -182,7 +201,13 @@ pub async fn announce(pool: &PgPool, tenant_id: Uuid, req: &AnnounceRequest) -> 
 }
 
 /// Phase 2a: receive staged bytes for an open upload session.
-pub async fn stage_upload(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, upload_id: Uuid, bytes: &[u8]) -> Result<()> {
+pub async fn stage_upload(
+    pool: &PgPool,
+    cas: &FsCas,
+    tenant_id: Uuid,
+    upload_id: Uuid,
+    bytes: &[u8],
+) -> Result<()> {
     let state: Option<(String,)> =
         sqlx::query_as("SELECT state FROM upload_session WHERE id = $1 AND tenant_id = $2")
             .bind(upload_id)
@@ -191,7 +216,9 @@ pub async fn stage_upload(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, upload_id
             .await?;
     match state.map(|s| s.0) {
         Some(s) if s == "open" => cas.stage(&upload_id.to_string(), bytes),
-        Some(s) => Err(Error::Conflict(format!("upload session {upload_id} is {s}"))),
+        Some(s) => Err(Error::Conflict(format!(
+            "upload session {upload_id} is {s}"
+        ))),
         None => Err(Error::NotFound(format!("upload session {upload_id}"))),
     }
 }
@@ -199,7 +226,12 @@ pub async fn stage_upload(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, upload_id
 /// Phase 2b: rehash staged bytes, reject on mismatch (invariant #1), promote
 /// to the CAS, and commit artifact + occurrence + capture attempt in one
 /// transaction. Then run forward-coverage scans for active bundles.
-pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &FinalizeRequest) -> Result<FinalizeResponse> {
+pub async fn finalize(
+    pool: &PgPool,
+    cas: &FsCas,
+    tenant_id: Uuid,
+    req: &FinalizeRequest,
+) -> Result<FinalizeResponse> {
     let session: Option<(String, String, Vec<u8>)> = sqlx::query_as(
         "SELECT state, staging_key, announced_sha256 FROM upload_session WHERE id = $1 AND tenant_id = $2",
     )
@@ -207,10 +239,13 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
     .bind(tenant_id)
     .fetch_optional(pool)
     .await?;
-    let (state, staging_key, _announced) = session
-        .ok_or_else(|| Error::NotFound(format!("upload session {}", req.upload_id)))?;
+    let (state, staging_key, _announced) =
+        session.ok_or_else(|| Error::NotFound(format!("upload session {}", req.upload_id)))?;
     if state != "open" {
-        return Err(Error::Conflict(format!("upload session {} is {state}", req.upload_id)));
+        return Err(Error::Conflict(format!(
+            "upload session {} is {state}",
+            req.upload_id
+        )));
     }
 
     let bytes = cas.read(&format!("staging/{staging_key}"))?;
@@ -233,7 +268,8 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
             // Record the coverage gap against the *announced* (untrusted) hash;
             // the recomputed bytes are never committed.
             let announced_raw = hash::hex_to_raw(&req.sha256).unwrap_or_default();
-            let (host, agent, observed, reason, path) = attempt_meta(req.occurrence.as_ref(), req.provenance.as_ref());
+            let (host, agent, observed, reason, path) =
+                attempt_meta(req.occurrence.as_ref(), req.provenance.as_ref());
             let mut tx = pool.begin().await?;
             insert_capture_attempt(
                 &mut tx,
@@ -265,9 +301,14 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
     let scope = req.scope.as_deref().unwrap_or("endpoint");
     if !matches!(scope, "endpoint" | "intel") {
         cas.discard_staging(&staging_key);
-        return Err(Error::BadRequest(format!("invalid artifact scope {scope:?}")));
+        return Err(Error::BadRequest(format!(
+            "invalid artifact scope {scope:?}"
+        )));
     }
-    let provenance = req.provenance.clone().unwrap_or_else(|| serde_json::json!({}));
+    let provenance = req
+        .provenance
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({}));
     let object_key = FsCas::object_key(tenant_id, &sha_hex);
     cas.commit(&staging_key, &object_key)?;
 
@@ -293,11 +334,13 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
     // Lost an insert race: adopt the existing row.
     let artifact_id = match artifact_id {
         Some(id) => id,
-        None => sqlx::query_scalar("SELECT id FROM artifact WHERE tenant_id = $1 AND sha256 = $2")
-            .bind(tenant_id)
-            .bind(&sha_raw)
-            .fetch_one(&mut *tx)
-            .await?,
+        None => {
+            sqlx::query_scalar("SELECT id FROM artifact WHERE tenant_id = $1 AND sha256 = $2")
+                .bind(tenant_id)
+                .bind(&sha_raw)
+                .fetch_one(&mut *tx)
+                .await?
+        }
     };
 
     if let Some(occ) = &req.occurrence {
@@ -312,7 +355,8 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
         )
         .await?;
     }
-    let (host, agent, observed, reason, path) = attempt_meta(req.occurrence.as_ref(), req.provenance.as_ref());
+    let (host, agent, observed, reason, path) =
+        attempt_meta(req.occurrence.as_ref(), req.provenance.as_ref());
     insert_capture_attempt(
         &mut tx,
         tenant_id,
@@ -334,8 +378,16 @@ pub async fn finalize(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, req: &Finaliz
     tx.commit().await?;
 
     // Forward coverage (spec 15.9): active bundles scan newly committed bytes.
-    let forward_matches =
-        crate::hunts::forward_scan(pool, tenant_id, artifact_id, &sha_raw, &bytes, &object_key, cas).await?;
+    let forward_matches = crate::hunts::forward_scan(
+        pool,
+        tenant_id,
+        artifact_id,
+        &sha_raw,
+        &bytes,
+        &object_key,
+        cas,
+    )
+    .await?;
 
     // Similarity analysis (spec 16): extract features, generate edges,
     // maintain variant groups. Never blocks the commit.
