@@ -211,7 +211,7 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
                         size_bytes: size,
                         occurrence: Some(occ(seq)),
                         scope: None,
-                        provenance: None,
+                        provenance: ads_provenance(&path),
                     })
                     .await;
                 match fin {
@@ -237,6 +237,23 @@ pub async fn process_candidate(rt: &AgentRuntime, cand: &Candidate) -> Result<()
         }
     }
     Ok(())
+}
+
+/// ADS metadata (Windows): non-default streams are recorded as queryable
+/// occurrence provenance. None elsewhere.
+#[cfg(target_os = "windows")]
+fn ads_provenance(path: &Path) -> Option<serde_json::Value> {
+    let ads = crate::sensors::ads::list_ads(path);
+    if ads.is_empty() {
+        None
+    } else {
+        Some(serde_json::json!({"ads": ads}))
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn ads_provenance(_path: &Path) -> Option<serde_json::Value> {
+    None
 }
 
 fn retry_or_fail(db: &StateDb, cand: &Candidate, max_attempts: i64, why: String) -> Result<()> {

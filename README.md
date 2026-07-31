@@ -119,6 +119,10 @@ endpoint (Linux)                     control plane
   key, out-of-process sandboxed analysis (`corpus-scanner` subprocess
   under seatbelt/landlock, tiered toward gVisor/Kata). See
   `docs/hardening-decisions.md` for the research and the honest limits.
+- **M2 — Windows agent (user-mode)**: ReadDirectoryChangesW watcher, USN
+  journal recovery signal, handle-based file identity, DPAPI spool-key
+  wrap, ADS metadata. User-mode coverage gaps (no exec observation, no
+  minifilter) are documented in the Windows section.
 
 ## Bootstrapping your vault
 
@@ -132,6 +136,52 @@ endpoint (Linux)                     control plane
 - **Intel**: `corpusctl intel taxii --url <srv> --collection <id>
   [--auto-hunt]`, `corpusctl intel malwarebazaar --limit N` (live
   malware — CAS-only, never execute, scope=intel, no occurrences).
+
+## Windows agent (M2, user-mode fallback)
+
+`corpus-agent` builds and runs on Windows (x86_64-pc-windows-gnu
+cross-compile via mingw-w64; `windows-latest` CI job builds and runs the
+agent test suite natively — that job is our only live Windows execution
+environment, see caveat below).
+
+Implemented (user mode, spec 10.10 fallback path):
+
+- **ReadDirectoryChangesW watcher** (recursive, file-name/last-write/
+  security) feeding the standard candidate pipeline; queue overflow is a
+  `SENSOR_OVERFLOW` coverage gap.
+- **USN change journal** (FSCTL_READ_JOURNAL) as a downtime-recovery
+  signal: records trigger an immediate reconciliation scan. Without
+  volume read access it degrades cleanly to the periodic poll sensor.
+- **File identity** via GetFileInformationByHandle (volume serial + file
+  index, the Windows analog of dev/inode) in the stable-read re-stat.
+- **ADS awareness** at the metadata level: non-default streams are
+  recorded as occurrence provenance (`artifact.provenance.ads`).
+- **DPAPI key wrapping** for the spool key (CryptProtectData,
+  CurrentUser), matching macOS Keychain / Linux key-file roles.
+- Everything else is shared code: capture state machine, stable read,
+  baseline, mTLS enrollment, encrypted spool, heartbeats.
+
+Coverage gaps vs the spec's preferred production design (signed
+minifilter + ETW, 10.10 Windows):
+
+- **No process-execution observation.** Win32_ProcessStartTrace requires
+  admin + COM/WMI plumbing; exec-priority capture (10.8 #1) degrades to
+  write-priority (close-write/rename). Executed-but-never-written
+  artifacts are captured only at write time.
+- **No kernel minifilter**: pre-write and deleted-before-close events can
+  race the user-mode watcher; the journal + reconcile bounds the loss but
+  cannot eliminate it. The signed minifilter, journal replay in-kernel,
+  and process/image ETW telemetry are the M2-production follow-up, along
+  with code signing/attestation (org-level: driver signing, installer
+  signing, release certification).
+- **USN records are used as a change signal**, not resolved to paths
+  (file-reference → path resolution is follow-up).
+- **Live-test caveat**: no Windows machine was available during
+  development. Verification is cross-compilation
+  (`x86_64-pc-windows-gnu`, mingw-w64), cfg-gated unit tests, and the
+  windows-latest CI job. RDCW/USN/DPAPI code paths have NOT been
+  exercised on a live Windows host yet; treat them as unproven until the
+  CI job and a staging host confirm them.
 
 ## Limitations and deviations (consolidated)
 

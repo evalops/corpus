@@ -18,6 +18,12 @@ pub struct SpoolCipher {
     cipher: XChaCha20Poly1305,
 }
 
+/// Raw 32-byte key material from the OS RNG.
+#[cfg(target_os = "windows")]
+pub(crate) fn random_key_material() -> [u8; 32] {
+    random_bytes::<32>()
+}
+
 fn random_bytes<const N: usize>() -> [u8; N] {
     // UUIDv4 is 16 random bytes; two of them make a 32-byte key, and the
     // first 24 of a third make a nonce. getrandom-grade randomness.
@@ -46,7 +52,7 @@ fn load_or_create_key_bytes(#[allow(unused_variables)] state_dir: &Path) -> Resu
             .context("storing spool key in macOS Keychain")?;
         Ok(key)
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let path = state_dir.join("spool.key");
         if let Ok(existing) = std::fs::read(&path) {
@@ -64,6 +70,10 @@ fn load_or_create_key_bytes(#[allow(unused_variables)] state_dir: &Path) -> Resu
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
         }
         Ok(key)
+    }
+    #[cfg(target_os = "windows")]
+    {
+        crate::win32_dpapi::load_or_create_key(state_dir)
     }
 }
 

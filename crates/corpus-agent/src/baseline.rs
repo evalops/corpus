@@ -94,7 +94,6 @@ pub fn reconcile_scan(
     exclusions: &[String],
     debounce_ms: u64,
 ) -> Result<usize> {
-    use std::os::unix::fs::MetadataExt;
     let mut n = 0;
     for root in roots {
         for entry in walkdir::WalkDir::new(root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
@@ -110,7 +109,8 @@ pub fn reconcile_scan(
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            if db.seen_check_and_update(&s, md.ino() as i64, md.mtime(), md.size() as i64)?
+            let key = crate::fileid::scan_key(&md);
+            if db.seen_check_and_update(&s, key.index as i64, (key.mtime_ns / 1_000_000_000) as i64, key.size as i64)?
                 && db.enqueue(&s, priority::RECONCILIATION, "reconcile_scan", debounce_ms)?.is_some()
             {
                 n += 1;

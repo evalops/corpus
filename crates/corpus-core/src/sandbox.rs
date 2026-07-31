@@ -86,6 +86,7 @@ pub async fn run_sandboxed(
     timeout: Duration,
     output_cap: usize,
 ) -> std::io::Result<serde_json::Value> {
+    #[allow(unused_variables)]
     let sample_dir = sample_path.parent().unwrap_or(Path::new("/"));
 
     #[cfg(target_os = "macos")]

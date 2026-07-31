@@ -8,12 +8,15 @@
 mod baseline;
 mod capture;
 mod config;
+mod fileid;
 mod heartbeat;
 mod sensors;
 mod spool_crypto;
 mod stable_read;
 mod state;
 mod uploader;
+#[cfg(target_os = "windows")]
+mod win32_dpapi;
 
 use anyhow::{Context, Result};
 use capture::AgentRuntime;
@@ -75,7 +78,19 @@ fn os_boot_id() -> String {
             uuid::Uuid::new_v4().to_string()
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        // Boot time ≈ now − GetTickCount64 uptime (ms-resolution; spec 12.4
+        // only needs boot-change detection, not precision).
+        let uptime_ms = unsafe { windows_sys::Win32::System::SystemInformation::GetTickCount64() };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i128)
+            .unwrap_or(0);
+        let boot_ms = (now_ms - uptime_ms as i128) / 1000;
+        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, format!("corpus-boot:{boot_ms}").as_bytes()).to_string()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         uuid::Uuid::new_v4().to_string()
     }
@@ -194,10 +209,31 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
             db.set_identity("sensor", "poll_reconcile")?;
         }
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         tracing::warn!("non-Linux dev build: poll sensor only (fanotify is Linux-only)");
         db.set_identity("sensor", "poll_reconcile")?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // User-mode fallback (spec 10.10 Windows): ReadDirectoryChangesW
+        // for live events; USN journal as a startup recovery signal —
+        // records prove "something changed while we were down" and trigger
+        // an immediate reconciliation pass. Without volume read access the
+        // journal read fails and the poll sensor covers recovery.
+        sensors::rdcw::start(db.clone(), &cfg.watch.paths, cfg.watch.exclusions.clone(), cfg.watch.debounce_ms);
+        db.set_identity("sensor", "rdcw_user_mode")?;
+        for root in &cfg.watch.paths {
+            let records = sensors::usn::read_journal(root, 0);
+            if !records.is_empty() {
+                tracing::info!(root = %root.display(), records = records.len(), "USN journal shows changes since last run; reconciling");
+                let db2 = db.clone();
+                let cfg2 = cfg.clone();
+                tokio::task::spawn_blocking(move || {
+                    let _ = baseline::reconcile_scan(&db2, &cfg2.watch.paths, &cfg2.watch.exclusions, cfg2.watch.debounce_ms);
+                });
+            }
+        }
     }
 
     // Baseline: low-priority checkpointed walk (spec 10.7), resumes itself.

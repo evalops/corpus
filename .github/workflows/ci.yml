@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: unit tests (hermetic; DB-gated integration tests no-op)
+        run: cargo test --workspace
+
+  windows-agent:
+    # The only live Windows execution environment for this project:
+    # builds AND runs the corpus-agent test suite natively.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build agent (windows)
+        run: cargo build -p corpus-agent
+      - name: agent tests (windows)
+        run: cargo test -p corpus-agent
+      - name: clippy (windows target)
+        run: cargo clippy -p corpus-agent -- -D warnings
