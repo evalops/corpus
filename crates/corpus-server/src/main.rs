@@ -243,11 +243,22 @@ async fn publish_bundle(
     State(st): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<BundlePublishRequest>,
-) -> Result<Json<BundleResponse>, AppError> {
+) -> Result<Json<BundlePublishResponse>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
-    Ok(Json(
-        registry::publish_bundle(&st.pool, t, &req.rule_ids, req.activate).await?,
-    ))
+    let bundle = registry::publish_bundle(&st.pool, t, &req.rule_ids, req.activate).await?;
+    let mut continuous_retro_hunt_id = None;
+    if req.activate {
+        if let Some(hunt) =
+            corpus_core::continuous::on_bundle_activated(&st.pool, t, &bundle.digest).await?
+        {
+            continuous_retro_hunt_id = Some(hunt.id);
+            // Execution is claimed by the durable hunt worker loop.
+        }
+    }
+    Ok(Json(BundlePublishResponse {
+        bundle,
+        continuous_retro_hunt_id,
+    }))
 }
 
 async fn list_bundles(
@@ -309,24 +320,8 @@ async fn run_hunt(
     if sync {
         return Ok(Json(hunts::run_hunt(&st.pool, &st.cas, t, hunt_id).await?));
     }
-    let resp = hunts::enqueue_hunt(&st.pool, t, hunt_id).await?;
-    // Local worker: spawn execute so the HTTP response returns while the
-    // hunt runs. Multi-node claim is via hunt_job + claim_next_job.
-    let pool = st.pool.clone();
-    let cas = st.cas.clone();
-    tokio::spawn(async move {
-        if let Err(e) = hunts::execute_hunt(&pool, &cas, t, hunt_id).await {
-            tracing::error!(%hunt_id, error = %e, "background hunt failed");
-            let _ = sqlx::query(
-                "UPDATE hunt_job SET last_error = $2, finished_at = now() WHERE hunt_id = $1",
-            )
-            .bind(hunt_id)
-            .bind(e.to_string())
-            .execute(&pool)
-            .await;
-        }
-    });
-    Ok(Json(resp))
+    // Enqueue only; the durable hunt worker claims and executes.
+    Ok(Json(hunts::enqueue_hunt(&st.pool, t, hunt_id).await?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -645,7 +640,83 @@ async fn upsert_indicators(
         .collect();
     let upserted =
         corpus_core::intel::upsert_indicators(&st.pool, t, &req.source, &indicators).await?;
-    Ok(Json(IndicatorsUpsertResponse { upserted }))
+    let sha_hashes: Vec<String> = indicators
+        .iter()
+        .filter(|i| i.ioc_type.eq_ignore_ascii_case("sha256"))
+        .map(|i| i.value.clone())
+        .collect();
+    let continuous =
+        corpus_core::continuous::on_hash_indicators(&st.pool, t, &req.source, &sha_hashes).await?;
+    Ok(Json(IndicatorsUpsertResponse {
+        upserted,
+        continuous,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct InvestigateQuery {
+    sha256: Option<String>,
+    hunt_id: Option<Uuid>,
+}
+
+async fn investigate(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<InvestigateQuery>,
+) -> Result<Json<InvestigationReport>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    match (q.sha256, q.hunt_id) {
+        (Some(sha), None) => Ok(Json(
+            corpus_core::investigate::by_sha256(&st.pool, t, &sha).await?,
+        )),
+        (None, Some(hid)) => Ok(Json(
+            corpus_core::investigate::by_hunt(&st.pool, t, hid).await?,
+        )),
+        _ => Err(Error::BadRequest("provide exactly one of sha256 or hunt_id".into()).into()),
+    }
+}
+
+async fn list_detections(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<DetectionEventView>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let rows = corpus_core::detect::recent(&st.pool, t, 100).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|d| DetectionEventView {
+                id: d.id,
+                source: d.source,
+                severity: d.severity,
+                title: d.title,
+                detail: d.detail,
+                mitre_techniques: d.mitre_techniques,
+                created_at: d.created_at,
+            })
+            .collect(),
+    ))
+}
+
+async fn list_continuous(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<serde_json::Value>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(
+        corpus_core::continuous::list_recent(&st.pool, t, 50).await?,
+    ))
+}
+
+async fn platform_metrics(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<PlatformMetrics>, AppError> {
+    // Tenant-scoped when header present; global when default tenant resolution
+    // still applies (header optional). Always scope to resolved tenant.
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(
+        corpus_core::metrics::platform_metrics(&st.pool, Some(t)).await?,
+    ))
 }
 
 async fn hash_hunt(
@@ -1245,6 +1316,10 @@ async fn main() -> anyhow::Result<()> {
             post(detonate_artifact),
         )
         .route("/api/v1/openapi.json", get(openapi_spec))
+        .route("/api/v1/investigate", get(investigate))
+        .route("/api/v1/detections", get(list_detections))
+        .route("/api/v1/continuous", get(list_continuous))
+        .route("/api/v1/metrics", get(platform_metrics))
         .route("/mcp", post(mcp_endpoint))
         .layer(middleware::from_fn_with_state(state.clone(), admin_gate))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
@@ -1276,6 +1351,34 @@ async fn main() -> anyhow::Result<()> {
                     tracing::warn!(error = %e, "trigger delivery sweep failed");
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            }
+        });
+    }
+
+    // Durable hunt worker: claim queued jobs (covers continuous re-analysis
+    // enqueues that lost their spawn, and multi-node claim).
+    {
+        let worker_pool = pool.clone();
+        let worker_cas = std::sync::Arc::new(FsCas::new(&cas_root)?);
+        let worker_id = format!("local-{}", uuid::Uuid::new_v4());
+        tokio::spawn(async move {
+            loop {
+                match hunts::claim_next_job(&worker_pool, &worker_id).await {
+                    Ok(Some((tenant_id, hunt_id))) => {
+                        if let Err(e) =
+                            hunts::execute_hunt(&worker_pool, &worker_cas, tenant_id, hunt_id).await
+                        {
+                            tracing::error!(%hunt_id, error = %e, "hunt worker failed");
+                        }
+                    }
+                    Ok(None) => {
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "hunt worker claim failed");
+                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    }
+                }
             }
         });
     }

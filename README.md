@@ -44,11 +44,16 @@ endpoint (Linux / Windows)           control plane
 | Area | Capabilities |
 |---|---|
 | **Corpus** | Content-addressed store, multi-tenant, announce-before-upload with server rehash, YARA-X immutable bundles, watermarked retro-hunts, scan cache, blast-radius |
+| **Continuous re-analysis** | Activating a bundle enqueues a full retro-hunt over retained history; sha256 intel IOCs auto hash-hunt; durable hunt worker |
+| **Autonomous detection** | Forward coverage and retro matches write `detection_event` rows (severity, optional MITRE heuristic) without a prior external alert |
+| **Investigation** | `corpusctl investigate --sha256\|--hunt` → campaign report: detections, blast radius + variants, MITRE labels, recommended actions |
 | **Agents** | Linux (fanotify + poll) and Windows (user-mode RDCW + USN); mTLS enrollment; encrypted spool; coverage gaps |
 | **Similarity** | PE/ELF features, ssdeep + banded LSH candidates, typed edges, variant groups; pure-Rust function-level semantic matching (x86-64) |
 | **Bootstrap** | Snapshot backfill, OCI import, TAXII / MalwareBazaar intel |
-| **Analyst** | Prevalence, rarity search, opinions, webhook triggers, dropper leads, proof-of-absence, read-only MCP |
+| **Analyst** | Prevalence, rarity search, opinions, webhook triggers, dropper leads, proof-of-absence, read-only MCP, `GET /api/v1/metrics` |
 | **Detonation** | Optional CAPEv2 adapter; sample egress off by default |
+
+Corpus is self-hosted ground truth (private longitudinal corpus + retro-hunt). It is not a SaaS AI SOC UI; investigation output is API/CLI JSON for tools you already run.
 
 ## Security (defaults)
 
