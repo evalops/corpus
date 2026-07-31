@@ -140,7 +140,94 @@ pub struct HuntResponse {
     pub completed_at: Option<DateTime<Utc>>,
 }
 
+// ---------- agents (M1) ----------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollmentTokenCreateRequest {
+    pub label: Option<String>,
+    pub ttl_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollmentTokenResponse {
+    pub token: String,
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollRequest {
+    pub enrollment_token: String,
+    pub host_name: String,
+    pub agent_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnrollResponse {
+    pub agent_id: Uuid,
+    pub agent_token: String,
+    pub tenant_id: Uuid,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatRequest {
+    pub agent_version: String,
+    pub policy_digest: String,
+    pub baseline_state: String,
+    pub baseline_percent: f64,
+    pub queue_depth: i64,
+    pub spool_bytes: i64,
+    pub oldest_pending_secs: Option<i64>,
+    pub sensor: String,
+    pub outcome_counts: serde_json::Value,
+    pub last_upload_at: Option<DateTime<Utc>>,
+    pub clock_offset_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GapEvent {
+    pub observed_at: DateTime<Utc>,
+    pub capture_reason: String,
+    pub terminal_outcome: String,
+    pub artifact_sha256: Option<String>,
+    pub path: Option<String>,
+    pub detail_code: Option<String>,
+    pub detail: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStatusResponse {
+    pub id: Uuid,
+    pub host_name: String,
+    pub version: String,
+    pub enrolled_at: DateTime<Utc>,
+    pub last_heartbeat_at: Option<DateTime<Utc>>,
+    pub last_upload_at: Option<DateTime<Utc>>,
+    pub policy_digest: Option<String>,
+    pub baseline_state: Option<String>,
+    pub baseline_percent: Option<f64>,
+    pub queue_depth: Option<i64>,
+    pub spool_bytes: Option<i64>,
+    pub oldest_pending_secs: Option<i64>,
+    pub sensor: Option<String>,
+    pub outcome_counts: serde_json::Value,
+    pub clock_offset_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct CoverageGapRow {
+    pub id: Uuid,
+    pub host_name: String,
+    pub agent_id: Uuid,
+    pub observed_at: DateTime<Utc>,
+    pub capture_reason: String,
+    pub terminal_outcome: String,
+    pub artifact_sha256_hex: Option<String>,
+    pub path: Option<String>,
+    pub detail_code: Option<String>,
+}
+
 // ---------- blast radius ----------
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusArtifact {

@@ -3,6 +3,7 @@
 //! `corpus-server` owns all writes; `corpusctl` reuses only the pure
 //! client-side pieces (hashing, classification, DTOs).
 
+pub mod agents;
 pub mod cas;
 pub mod classify;
 pub mod db;

@@ -59,6 +59,49 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ReportCmd,
     },
+    /// Mint one-time agent enrollment tokens.
+    EnrollToken {
+        #[command(subcommand)]
+        cmd: EnrollTokenCmd,
+    },
+    /// Fleet health (spec 10.11).
+    Agents {
+        #[command(subcommand)]
+        cmd: AgentsCmd,
+    },
+    /// Coverage reporting.
+    Coverage {
+        #[command(subcommand)]
+        cmd: CoverageCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnrollTokenCmd {
+    /// Create a one-time enrollment token (printed exactly once).
+    Create {
+        #[arg(long, default_value = "")]
+        label: String,
+        #[arg(long)]
+        ttl_secs: Option<i64>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AgentsCmd {
+    List,
+    Status { agent_id: Uuid },
+}
+
+#[derive(Subcommand)]
+enum CoverageCmd {
+    /// List capture attempts that ended in a gap outcome (spec 2.2).
+    Gaps {
+        #[arg(long)]
+        outcome: Option<String>,
+        #[arg(long, default_value = "100")]
+        limit: i64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -417,6 +460,77 @@ async fn main() -> Result<()> {
                 let report: BlastRadiusReport =
                     client.send(client.req(reqwest::Method::GET, &path)).await?;
                 println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+        },
+
+        Cmd::EnrollToken { cmd } => match cmd {
+            EnrollTokenCmd::Create { label, ttl_secs } => {
+                let tok: EnrollmentTokenResponse = client
+                    .send(client.req(reqwest::Method::POST, "/api/v1/enrollment-tokens").json(
+                        &EnrollmentTokenCreateRequest { label: Some(label), ttl_secs },
+                    ))
+                    .await?;
+                println!("enrollment_token: {}", tok.token);
+                if let Some(exp) = tok.expires_at {
+                    println!("expires_at: {exp}");
+                }
+            }
+        },
+
+        Cmd::Agents { cmd } => match cmd {
+            AgentsCmd::List => {
+                let agents: Vec<AgentStatusResponse> =
+                    client.send(client.req(reqwest::Method::GET, "/api/v1/agents")).await?;
+                for a in agents {
+                    let hb = a
+                        .last_heartbeat_at
+                        .map(|t| t.to_rfc3339())
+                        .unwrap_or_else(|| "never".into());
+                    println!(
+                        "{} {} v{} baseline={}({:.0}%) queue={:?} spool={:?} sensor={:?} last_heartbeat={}",
+                        a.id,
+                        a.host_name,
+                        a.version,
+                        a.baseline_state.as_deref().unwrap_or("-"),
+                        a.baseline_percent.unwrap_or(0.0),
+                        a.queue_depth,
+                        a.spool_bytes,
+                        a.sensor,
+                        hb
+                    );
+                }
+            }
+            AgentsCmd::Status { agent_id } => {
+                let a: AgentStatusResponse = client
+                    .send(client.req(reqwest::Method::GET, &format!("/api/v1/agents/{agent_id}")))
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&a)?);
+            }
+        },
+
+        Cmd::Coverage { cmd } => match cmd {
+            CoverageCmd::Gaps { outcome, limit } => {
+                let mut path = format!("/api/v1/coverage/gaps?limit={limit}");
+                if let Some(o) = &outcome {
+                    path.push_str(&format!("&outcome={o}"));
+                }
+                let gaps: Vec<CoverageGapRow> =
+                    client.send(client.req(reqwest::Method::GET, &path)).await?;
+                let empty = gaps.is_empty();
+                for g in &gaps {
+                    println!(
+                        "{} {} {} {} {} {}",
+                        g.observed_at.to_rfc3339(),
+                        g.terminal_outcome,
+                        g.host_name,
+                        g.path.as_deref().unwrap_or("-"),
+                        g.detail_code.as_deref().unwrap_or(""),
+                        g.capture_reason
+                    );
+                }
+                if empty {
+                    println!("no coverage gaps recorded");
+                }
             }
         },
     }

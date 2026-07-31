@@ -37,6 +37,7 @@ impl IntoResponse for AppError {
         let status = match &self.0 {
             Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Conflict(_) => StatusCode::CONFLICT,
+            Error::Unauthorized(_) => StatusCode::UNAUTHORIZED,
             Error::BadRequest(_) | Error::RuleParse(_) => StatusCode::BAD_REQUEST,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::RuleCompile(_) | Error::HashMismatch { .. } => StatusCode::UNPROCESSABLE_ENTITY,
@@ -87,12 +88,46 @@ async fn get_tenant(
     ))
 }
 
+/// Ingest authentication: a bearer token means "agent" — the occurrence's
+/// agent identity is overwritten from the authenticated identity (agents
+/// cannot forge another agent's evidence), and the tenant comes from the
+/// agent row. No bearer means the unauthenticated dev path used by
+/// `corpusctl import` in local demos.
+enum IngestAuth {
+    Agent(corpus_core::agents::AgentIdentity),
+    Dev(Uuid),
+}
+
+async fn ingest_auth(st: &AppState, headers: &HeaderMap) -> Result<IngestAuth, AppError> {
+    if let Some(v) = headers.get("authorization") {
+        let tok = v
+            .to_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .ok_or_else(|| Error::Unauthorized("malformed authorization header".into()))?;
+        let ident = corpus_core::agents::authenticate(&st.pool, tok).await?;
+        return Ok(IngestAuth::Agent(ident));
+    }
+    Ok(IngestAuth::Dev(resolve_tenant(&st.pool, headers).await?))
+}
+
+fn apply_agent_identity(ident: &corpus_core::agents::AgentIdentity, occ: &mut OccurrenceInfo) {
+    occ.agent_id = ident.agent_id;
+    occ.host_name = ident.host_name.clone();
+}
+
 async fn announce(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<AnnounceRequest>,
+    Json(mut req): Json<AnnounceRequest>,
 ) -> Result<Json<AnnounceResponse>, AppError> {
-    let t = resolve_tenant(&st.pool, &headers).await?;
+    let t = match ingest_auth(&st, &headers).await? {
+        IngestAuth::Agent(ident) => {
+            apply_agent_identity(&ident, &mut req.occurrence);
+            ident.tenant_id
+        }
+        IngestAuth::Dev(t) => t,
+    };
     Ok(Json(ingest::announce(&st.pool, t, &req).await?))
 }
 
@@ -102,7 +137,10 @@ async fn upload(
     Path(upload_id): Path<Uuid>,
     body: Bytes,
 ) -> Result<StatusCode, AppError> {
-    let t = resolve_tenant(&st.pool, &headers).await?;
+    let t = match ingest_auth(&st, &headers).await? {
+        IngestAuth::Agent(ident) => ident.tenant_id,
+        IngestAuth::Dev(t) => t,
+    };
     ingest::stage_upload(&st.pool, &st.cas, t, upload_id, &body).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -110,9 +148,15 @@ async fn upload(
 async fn finalize(
     State(st): State<AppState>,
     headers: HeaderMap,
-    Json(req): Json<FinalizeRequest>,
+    Json(mut req): Json<FinalizeRequest>,
 ) -> Result<Json<FinalizeResponse>, AppError> {
-    let t = resolve_tenant(&st.pool, &headers).await?;
+    let t = match ingest_auth(&st, &headers).await? {
+        IngestAuth::Agent(ident) => {
+            apply_agent_identity(&ident, &mut req.occurrence);
+            ident.tenant_id
+        }
+        IngestAuth::Dev(t) => t,
+    };
     Ok(Json(ingest::finalize(&st.pool, &st.cas, t, &req).await?))
 }
 
@@ -198,6 +242,96 @@ async fn blast_radius(
     }
 }
 
+// ---------- agent endpoints (M1) ----------
+
+fn bearer_token(headers: &HeaderMap) -> Result<String, AppError> {
+    let v = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .ok_or_else(|| Error::BadRequest("missing bearer token".into()))?;
+    Ok(v.to_string())
+}
+
+async fn create_enrollment_token(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<EnrollmentTokenCreateRequest>,
+) -> Result<Json<EnrollmentTokenResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(
+        corpus_core::agents::create_enrollment_token(
+            &st.pool,
+            t,
+            req.label.as_deref().unwrap_or(""),
+            req.ttl_secs,
+        )
+        .await?,
+    ))
+}
+
+async fn enroll(
+    State(st): State<AppState>,
+    Json(req): Json<EnrollRequest>,
+) -> Result<Json<EnrollResponse>, AppError> {
+    Ok(Json(corpus_core::agents::enroll(&st.pool, &req).await?))
+}
+
+async fn agent_heartbeat(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(hb): Json<HeartbeatRequest>,
+) -> Result<StatusCode, AppError> {
+    let ident = corpus_core::agents::authenticate(&st.pool, &bearer_token(&headers)?).await?;
+    corpus_core::agents::heartbeat(&st.pool, &ident, &hb).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn report_gaps(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(gaps): Json<Vec<GapEvent>>,
+) -> Result<StatusCode, AppError> {
+    let ident = corpus_core::agents::authenticate(&st.pool, &bearer_token(&headers)?).await?;
+    corpus_core::agents::record_gaps(&st.pool, &ident, &gaps).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_agents(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AgentStatusResponse>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(corpus_core::agents::list_agents(&st.pool, t).await?))
+}
+
+async fn agent_status(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<Uuid>,
+) -> Result<Json<AgentStatusResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(corpus_core::agents::agent_status(&st.pool, t, agent_id).await?))
+}
+
+#[derive(Debug, Deserialize)]
+struct CoverageGapsQuery {
+    outcome: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn coverage_gaps(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CoverageGapsQuery>,
+) -> Result<Json<Vec<CoverageGapRow>>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(
+        corpus_core::agents::coverage_gaps(&st.pool, t, q.outcome.as_deref(), q.limit.unwrap_or(100))
+            .await?,
+    ))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -234,6 +368,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/hunts/{hunt_id}", get(get_hunt))
         .route("/api/v1/hunts/{hunt_id}/run", post(run_hunt))
         .route("/api/v1/reports/blast-radius", get(blast_radius))
+        .route("/api/v1/enrollment-tokens", post(create_enrollment_token))
+        .route("/api/v1/agents/enroll", post(enroll))
+        .route("/api/v1/agents/heartbeat", post(agent_heartbeat))
+        .route("/api/v1/agents/gaps", post(report_gaps))
+        .route("/api/v1/agents", get(list_agents))
+        .route("/api/v1/agents/{agent_id}", get(agent_status))
+        .route("/api/v1/coverage/gaps", get(coverage_gaps))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
         .with_state(AppState { pool, cas: std::sync::Arc::new(cas) });
 

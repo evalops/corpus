@@ -28,6 +28,9 @@ pub enum Error {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("bad request: {0}")]
     BadRequest(String),
 

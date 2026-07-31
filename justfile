@@ -33,6 +33,10 @@ serve:
 demo:
     bash scripts/demo.sh
 
+# M1 agent demo (Linux agent in a privileged container, fanotify).
+demo-agent:
+    bash scripts/demo-agent.sh
+
 # Generate demo fixtures without running the demo.
 fixtures:
     bash scripts/gen-testdata.sh testdata
