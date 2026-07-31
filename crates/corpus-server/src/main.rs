@@ -1,15 +1,21 @@
-//! corpus-server: axum REST API owning all writes (spec 8.2).
+//! corpus-server: axum REST API owning all writes.
 //!
 //! Dev profile: filesystem CAS + PostgreSQL via Docker Compose. Tenants are
 //! first-class rows; `X-Corpus-Tenant` accepts a UUID or slug and defaults
 //! to the seeded `default` tenant when omitted.
+//!
+//! Admin auth: see `corpus_core::auth`. Non-loopback binds require
+//! `CORPUS_ADMIN_TOKEN`. Hunts enqueue async by default; pass `?sync=1`
+//! to run in-request.
 
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
+use corpus_core::auth::AuthConfig;
 use corpus_core::cas::FsCas;
 use corpus_core::dto::*;
 use corpus_core::error::Error;
@@ -23,6 +29,7 @@ struct AppState {
     pool: PgPool,
     cas: std::sync::Arc<FsCas>,
     ca: std::sync::Arc<corpus_core::mtls::DeploymentCa>,
+    auth: AuthConfig,
 }
 
 struct AppError(Error);
@@ -70,6 +77,12 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok", "engine": corpus_core::ENGINE_VERSION}))
 }
 
+async fn openapi_spec() -> Json<serde_json::Value> {
+    Json(serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap_or_else(|_| {
+        serde_json::json!({"openapi": "3.0.3", "info": {"title": "Corpus API", "version": "0.1.0"}})
+    }))
+}
+
 async fn create_tenant(
     State(st): State<AppState>,
     Json(req): Json<TenantCreateRequest>,
@@ -96,11 +109,9 @@ async fn get_tenant(
     ))
 }
 
-/// Ingest authentication: a bearer token means "agent" — the occurrence's
-/// agent identity is overwritten from the authenticated identity (agents
-/// cannot forge another agent's evidence), and the tenant comes from the
-/// agent row. No bearer means the unauthenticated dev path used by
-/// `corpusctl import` in local demos.
+/// Ingest authentication: admin bearer → tenant-scoped CLI path; agent
+/// bearer → agent identity; no bearer → unauthenticated dev path only
+/// when `allow_dev_ingest` is true.
 enum IngestAuth {
     Agent(corpus_core::agents::AgentIdentity),
     Dev(Uuid),
@@ -113,10 +124,48 @@ async fn ingest_auth(st: &AppState, headers: &HeaderMap) -> Result<IngestAuth, A
             .ok()
             .and_then(|s| s.strip_prefix("Bearer "))
             .ok_or_else(|| Error::Unauthorized("malformed authorization header".into()))?;
+        if st.auth.admin_matches(tok) {
+            return Ok(IngestAuth::Dev(resolve_tenant(&st.pool, headers).await?));
+        }
         let ident = corpus_core::agents::authenticate(&st.pool, tok).await?;
         return Ok(IngestAuth::Agent(ident));
     }
+    if !st.auth.allow_dev_ingest {
+        return Err(Error::Unauthorized(
+            "ingest requires agent or admin bearer (dev path disabled)".into(),
+        )
+        .into());
+    }
     Ok(IngestAuth::Dev(resolve_tenant(&st.pool, headers).await?))
+}
+
+/// Middleware: when admin auth is required, all routes except health,
+/// enroll, ingest, and agent self-service need a matching admin token.
+async fn admin_gate(
+    State(st): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    if !st.auth.require_admin {
+        return Ok(next.run(req).await);
+    }
+    let path = req.uri().path();
+    let skip = path == "/api/v1/health"
+        || path == "/api/v1/agents/enroll"
+        || path == "/api/v1/artifacts/announce"
+        || path == "/api/v1/artifacts/finalize"
+        || path.starts_with("/api/v1/artifacts/uploads/")
+        || path == "/api/v1/agents/heartbeat"
+        || path == "/api/v1/agents/gaps";
+    if skip {
+        return Ok(next.run(req).await);
+    }
+    let auth = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+    st.auth.check_admin(auth)?;
+    Ok(next.run(req).await)
 }
 
 fn apply_agent_identity(
@@ -237,13 +286,47 @@ async fn get_hunt(
     Ok(Json(hunts::get_hunt(&st.pool, t, hunt_id).await?))
 }
 
+#[derive(Debug, Deserialize)]
+struct RunHuntQuery {
+    /// When true (or `1`), run the hunt in-request to completion.
+    /// Default: enqueue and return QUEUED; a background worker executes.
+    sync: Option<String>,
+}
+
 async fn run_hunt(
     State(st): State<AppState>,
     headers: HeaderMap,
     Path(hunt_id): Path<Uuid>,
+    Query(q): Query<RunHuntQuery>,
 ) -> Result<Json<HuntResponse>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
-    Ok(Json(hunts::run_hunt(&st.pool, &st.cas, t, hunt_id).await?))
+    let sync = q
+        .sync
+        .as_deref()
+        .map(|s| s == "1" || s.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+        || std::env::var("CORPUS_HUNT_SYNC").is_ok();
+    if sync {
+        return Ok(Json(hunts::run_hunt(&st.pool, &st.cas, t, hunt_id).await?));
+    }
+    let resp = hunts::enqueue_hunt(&st.pool, t, hunt_id).await?;
+    // Local worker: spawn execute so the HTTP response returns while the
+    // hunt runs. Multi-node claim is via hunt_job + claim_next_job.
+    let pool = st.pool.clone();
+    let cas = st.cas.clone();
+    tokio::spawn(async move {
+        if let Err(e) = hunts::execute_hunt(&pool, &cas, t, hunt_id).await {
+            tracing::error!(%hunt_id, error = %e, "background hunt failed");
+            let _ = sqlx::query(
+                "UPDATE hunt_job SET last_error = $2, finished_at = now() WHERE hunt_id = $1",
+            )
+            .bind(hunt_id)
+            .bind(e.to_string())
+            .execute(&pool)
+            .await;
+        }
+    });
+    Ok(Json(resp))
 }
 
 #[derive(Debug, Deserialize)]
@@ -428,6 +511,7 @@ async fn run_agent_listener(
     ca: std::sync::Arc<corpus_core::mtls::DeploymentCa>,
     pool: PgPool,
     cas: std::sync::Arc<FsCas>,
+    auth: AuthConfig,
 ) -> anyhow::Result<()> {
     use axum::Extension as AxExtension;
     let config = corpus_core::mtls::server_config(&ca)?;
@@ -441,7 +525,12 @@ async fn run_agent_listener(
         .route("/api/v1/artifacts/announce", post(announce_mtls))
         .route("/api/v1/artifacts/uploads/{upload_id}", put(upload_mtls))
         .route("/api/v1/artifacts/finalize", post(finalize_mtls))
-        .with_state(AppState { pool, cas, ca });
+        .with_state(AppState {
+            pool,
+            cas,
+            ca,
+            auth,
+        });
     loop {
         let (stream, _) = listener.accept().await?;
         let acceptor = acceptor.clone();
@@ -600,6 +689,13 @@ async fn detonate_artifact(
         row.ok_or_else(|| Error::NotFound(format!("artifact {sha256}")))?;
     let bytes = st.cas.read(&object_key)?;
     let cfg = corpus_core::detonate::DetonationConfig::from_env();
+    cfg.validate()?;
+    if !cfg.enabled {
+        return Err(Error::BadRequest(
+            "detonation disabled; set CORPUS_DETONATION_ENABLED=1".into(),
+        )
+        .into());
+    }
     let provider = match &cfg.cape_url {
         Some(url) => corpus_core::detonate::CapeProvider::new(url, cfg.cape_token.clone()),
         None => {
@@ -898,13 +994,12 @@ async fn mcp_endpoint(
     headers: HeaderMap,
     Json(req): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    let token = std::env::var("CORPUS_MCP_TOKEN").unwrap_or_else(|_| "mcp-dev-token".into());
-    let ok = headers
+    let provided = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        == Some(token.as_str());
-    if !ok {
+        .unwrap_or("");
+    if !st.auth.mcp_matches(provided) {
         return Err(Error::Unauthorized("invalid MCP token".into()).into());
     }
     let t = resolve_tenant(&st.pool, &headers).await?;
@@ -1056,6 +1151,23 @@ async fn main() -> anyhow::Result<()> {
     let cas_root = std::env::var("CORPUS_CAS_ROOT").unwrap_or_else(|_| "./data/cas".into());
     let listen = std::env::var("CORPUS_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".into());
 
+    let auth = AuthConfig::from_env(&listen).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+    if auth.require_admin {
+        tracing::info!("admin auth required on non-public routes (CORPUS_ADMIN_TOKEN)");
+    } else {
+        tracing::warn!(
+            "admin auth off (loopback bind without CORPUS_ADMIN_TOKEN); \
+             do not expose this listener"
+        );
+    }
+    if auth.listen_is_loopback && auth.mcp_token == corpus_core::auth::MCP_DEV_TOKEN {
+        tracing::warn!("MCP using default dev token; set CORPUS_MCP_TOKEN for anything non-local");
+    }
+    // Fail closed early if detonation is misconfigured while enabled.
+    corpus_core::detonate::DetonationConfig::from_env()
+        .validate()
+        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+
     let pool = db::connect(&database_url).await?;
     db::migrate(&pool).await?;
     tracing::info!("migrations applied");
@@ -1082,6 +1194,13 @@ async fn main() -> anyhow::Result<()> {
     )?);
     let agent_listen =
         std::env::var("CORPUS_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
+
+    let state = AppState {
+        pool: pool.clone(),
+        cas: std::sync::Arc::new(cas),
+        ca: ca.clone(),
+        auth: auth.clone(),
+    };
 
     let app = Router::new()
         .route("/api/v1/health", get(health))
@@ -1125,13 +1244,11 @@ async fn main() -> anyhow::Result<()> {
             "/api/v1/artifacts/{sha256}/detonate",
             post(detonate_artifact),
         )
+        .route("/api/v1/openapi.json", get(openapi_spec))
         .route("/mcp", post(mcp_endpoint))
+        .layer(middleware::from_fn_with_state(state.clone(), admin_gate))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
-        .with_state(AppState {
-            pool: pool.clone(),
-            cas: std::sync::Arc::new(cas),
-            ca: ca.clone(),
-        });
+        .with_state(state);
 
     // mTLS agent listener (M6): /agents/* + authenticated ingest behind
     // required client certificates.
@@ -1140,8 +1257,10 @@ async fn main() -> anyhow::Result<()> {
         let agent_cas = std::sync::Arc::new(FsCas::new(&cas_root)?);
         let agent_ca = ca.clone();
         let agent_listen = agent_listen.clone();
+        let agent_auth = auth.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_agent_listener(&agent_listen, agent_ca, agent_pool, agent_cas).await
+            if let Err(e) =
+                run_agent_listener(&agent_listen, agent_ca, agent_pool, agent_cas, agent_auth).await
             {
                 tracing::error!(error = %e, "mTLS agent listener failed");
             }

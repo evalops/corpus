@@ -1,15 +1,14 @@
 //! Candidate generation, typed edge insertion, and variant-group
-//! maintenance (spec 16.3, 16.4, 16.6).
+//! maintenance.
 //!
-//! Scale note: byte-similar candidate scoring is brute-force over the
-//! per-tenant corpus narrowed by format+size bucket (16.3 layers 1-2).
-//! That is fine at M3 scale (tens of thousands of artifacts); the banded
-//! LSH index is the documented follow-up when tenants outgrow it.
+//! Byte-similar candidates use the banded LSH index when populated;
+//! otherwise they fall back to a format-class scan (small tenants).
 
 use crate::cas::FsCas;
 use crate::error::Result;
 use crate::similarity::extract::{self, ExtractedFeatures, EXTRACTOR_VERSION};
 use crate::similarity::fuzzy;
+use crate::similarity::lsh;
 use crate::similarity::model::{edge_type, merges_groups, MODEL_V1, MODEL_VERSION};
 use chrono::Utc;
 use sqlx::PgPool;
@@ -204,6 +203,63 @@ async fn fire_variant_join(pool: &PgPool, tenant: Uuid, group: Uuid, artifact: U
     Ok(())
 }
 
+/// Prefer LSH candidates; if the index is empty for this tenant, scan the
+/// format class (small-tenant fallback).
+async fn fuzzy_candidates(
+    pool: &PgPool,
+    tenant: Uuid,
+    artifact: Uuid,
+    artifact_class: &str,
+    ssdeep: &str,
+) -> Result<Vec<(Uuid, String, f64)>> {
+    if lsh::index_populated(pool, tenant).await? {
+        let ids = lsh::candidates(pool, tenant, artifact, ssdeep).await?;
+        if !ids.is_empty() {
+            let mut out = Vec::with_capacity(ids.len());
+            for other in ids {
+                let row: Option<(String, f64, String)> = sqlx::query_as(
+                    "SELECT sf.value->>'digest',
+                            COALESCE((sf.value->>'entropy')::float8, 0.0),
+                            a.artifact_class
+                     FROM similarity_feature sf
+                     JOIN artifact a ON a.tenant_id = sf.tenant_id AND a.id = sf.artifact_id
+                     WHERE sf.tenant_id = $1 AND sf.artifact_id = $2
+                       AND sf.family = 'byte' AND sf.name = 'ssdeep' AND sf.version = $3",
+                )
+                .bind(tenant)
+                .bind(other)
+                .bind(EXTRACTOR_VERSION)
+                .fetch_optional(pool)
+                .await?;
+                if let Some((digest, entropy, class)) = row {
+                    if class == artifact_class {
+                        out.push((other, digest, entropy));
+                    }
+                }
+            }
+            return Ok(out);
+        }
+    }
+    // Fallback: full format-class scan.
+    let bucket: Vec<(Uuid, String, f64)> = sqlx::query_as(
+        "SELECT a.id, sf.value->>'digest' AS digest,
+                (sf.value->>'entropy')::float8 AS entropy
+         FROM artifact a
+         JOIN similarity_feature sf
+           ON sf.tenant_id = a.tenant_id AND sf.artifact_id = a.id
+          AND sf.family = 'byte' AND sf.name = 'ssdeep' AND sf.version = $4
+         WHERE a.tenant_id = $1 AND a.artifact_class = $2 AND a.id != $3
+           AND a.size_bytes > 0",
+    )
+    .bind(tenant)
+    .bind(artifact_class)
+    .bind(artifact)
+    .bind(EXTRACTOR_VERSION)
+    .fetch_all(pool)
+    .await?;
+    Ok(bucket)
+}
+
 /// Full analysis for one committed artifact: extract + store features,
 /// generate candidates, insert typed edges, maintain variant groups.
 /// Idempotent; safe to re-run from backfill.
@@ -216,6 +272,7 @@ pub async fn analyze_artifact(
 ) -> Result<usize> {
     let f = extract::extract(bytes);
     store_features(pool, tenant, artifact, &f).await?;
+    lsh::store_bands(pool, tenant, artifact, &f.ssdeep).await?;
     let mut edges = 0usize;
 
     // Layer 1: normalized hash index -> normalized_equivalent (strong).
@@ -262,24 +319,9 @@ pub async fn analyze_artifact(
         }
     }
 
-    // Layers 2+3: format/size bucket -> fuzzy nearest candidates (weak lead).
-    let bucket: Vec<(Uuid, Vec<u8>, String, f64)> = sqlx::query_as(
-        "SELECT a.id, a.sha256, sf.value->>'digest' AS digest,
-                (sf.value->>'entropy')::float8 AS entropy
-         FROM artifact a
-         JOIN similarity_feature sf
-           ON sf.tenant_id = a.tenant_id AND sf.artifact_id = a.id
-          AND sf.family = 'byte' AND sf.name = 'ssdeep' AND sf.version = $4
-         WHERE a.tenant_id = $1 AND a.artifact_class = $2 AND a.id != $3
-           AND a.size_bytes > 0",
-    )
-    .bind(tenant)
-    .bind(artifact_class)
-    .bind(artifact)
-    .bind(EXTRACTOR_VERSION)
-    .fetch_all(pool)
-    .await?;
-    for (other, _sha, digest, entropy) in bucket {
+    // Layers 2+3: LSH candidates (or format-class fallback) → fuzzy score.
+    let bucket = fuzzy_candidates(pool, tenant, artifact, artifact_class, &f.ssdeep).await?;
+    for (other, digest, entropy) in bucket {
         let other_size: i64 =
             sqlx::query_scalar("SELECT size_bytes FROM artifact WHERE tenant_id = $1 AND id = $2")
                 .bind(tenant)

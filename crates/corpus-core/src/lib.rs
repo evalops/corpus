@@ -5,6 +5,7 @@
 
 pub mod agents;
 pub mod analyst;
+pub mod auth;
 pub mod cas;
 pub mod classify;
 pub mod db;

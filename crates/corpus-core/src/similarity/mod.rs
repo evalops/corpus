@@ -5,5 +5,6 @@
 pub mod edges;
 pub mod extract;
 pub mod fuzzy;
+pub mod lsh;
 pub mod model;
 pub mod testutil;

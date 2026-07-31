@@ -210,10 +210,263 @@ pub async fn scan_with_tier(
                 Err(e) => error_outcome(&format!("sandbox spawn: {e}")),
             }
         }
-        ScannerTier::Gvisor => error_outcome(
-            "gvisor tier unavailable: no runsc runtime registered in docker (verified: Colima ships runc only); configure gVisor on a real Linux host",
-        ),
+        ScannerTier::Gvisor => {
+            let path = match sample_path {
+                Some(p) => p,
+                None => return error_outcome("gvisor tier requires a sample path"),
+            };
+            match scan_gvisor(sources, path, crate::scan::SCAN_TIMEOUT, 1024 * 1024).await {
+                Ok(v) => outcome_from_json(&v),
+                Err(e) => error_outcome(&e),
+            }
+        }
     }
+}
+
+/// Minimum isolation required for scanning. When set to `gvisor`,
+/// subprocess/inprocess tiers are rejected for the call site that checks.
+pub fn min_tier_from_env() -> Option<ScannerTier> {
+    match std::env::var("CORPUS_MIN_SCANNER_TIER").as_deref() {
+        Ok("gvisor") => Some(ScannerTier::Gvisor),
+        Ok("subprocess") => Some(ScannerTier::Subprocess),
+        _ => None,
+    }
+}
+
+/// Return an error string if `tier` is weaker than the configured minimum.
+pub fn check_min_tier(tier: ScannerTier) -> Option<String> {
+    match min_tier_from_env() {
+        Some(ScannerTier::Gvisor) if tier != ScannerTier::Gvisor => Some(
+            "CORPUS_MIN_SCANNER_TIER=gvisor requires CORPUS_SCANNER_TIER=gvisor \
+             (subprocess/seatbelt is not a hostile-malware boundary)"
+                .into(),
+        ),
+        Some(ScannerTier::Subprocess) if tier == ScannerTier::InProcess => {
+            Some("CORPUS_MIN_SCANNER_TIER=subprocess rejects inprocess scans".into())
+        }
+        _ => None,
+    }
+}
+
+/// Run corpus-scanner under gVisor via `runsc` or `docker --runtime=runsc`.
+///
+/// Host prerequisites (Linux): gVisor `runsc` installed and either on PATH
+/// or registered as a Docker runtime. See docs/deploy.md.
+pub async fn scan_gvisor(
+    rules: &[(String, String)],
+    sample_path: &Path,
+    timeout: Duration,
+    output_cap: usize,
+) -> std::result::Result<serde_json::Value, String> {
+    let scanner = scanner_binary();
+    if !scanner.exists() {
+        return Err(format!(
+            "corpus-scanner binary not found at {}",
+            scanner.display()
+        ));
+    }
+    let job = serde_json::json!({
+        "rules": rules,
+        "sample_path": "/sample/artifact",
+    });
+    let sample_dir = sample_path
+        .parent()
+        .ok_or_else(|| "sample path has no parent".to_string())?;
+    let sample_name = sample_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| "sample file name invalid".to_string())?;
+
+    // Prefer bare runsc (OCI runtime) when present; else docker runtime.
+    if which_on_path("runsc") {
+        return run_via_runsc(
+            &scanner,
+            sample_dir,
+            sample_name,
+            &job.to_string(),
+            timeout,
+            output_cap,
+        )
+        .await;
+    }
+    if which_on_path("docker") {
+        return run_via_docker_runsc(&scanner, sample_path, &job.to_string(), timeout, output_cap)
+            .await;
+    }
+    Err("gvisor tier: neither `runsc` nor `docker` found on PATH; \
+         install gVisor on a Linux host (docs/deploy.md)"
+        .into())
+}
+
+fn which_on_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths).any(|p| {
+                let c = p.join(bin);
+                c.is_file()
+            })
+        })
+        .unwrap_or(false)
+}
+
+async fn run_via_docker_runsc(
+    scanner: &Path,
+    sample_path: &Path,
+    job_json: &str,
+    timeout: Duration,
+    output_cap: usize,
+) -> std::result::Result<serde_json::Value, String> {
+    // docker run --rm --runtime=runsc -i \
+    //   -v scanner:/scanner:ro -v sample:/sample:ro \
+    //   --network=none gcr.io/distroless/static-debian12 \
+    //   /scanner  — we use a minimal approach: host-mounted binaries.
+    let sample_dir = sample_path.parent().unwrap_or(Path::new("/"));
+    let sample_name = sample_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("artifact");
+    let scanner_dir = scanner.parent().unwrap_or(Path::new("/"));
+    let scanner_name = scanner
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("corpus-scanner");
+
+    // Probe runtime first.
+    let probe = tokio::process::Command::new("docker")
+        .args(["info", "--format", "{{.Runtimes}}"])
+        .output()
+        .await
+        .map_err(|e| format!("docker info: {e}"))?;
+    let runtimes = String::from_utf8_lossy(&probe.stdout);
+    if !runtimes.contains("runsc") {
+        return Err(format!(
+            "docker has no runsc runtime (runtimes={}); install gVisor and \
+             register runsc (docs/deploy.md)",
+            runtimes.trim()
+        ));
+    }
+
+    let mut cmd = tokio::process::Command::new("docker");
+    cmd.args([
+        "run",
+        "--rm",
+        "-i",
+        "--runtime=runsc",
+        "--network=none",
+        "-v",
+    ])
+    .arg(format!("{}:/scanner:ro", scanner_dir.display()))
+    .arg("-v")
+    .arg(format!("{}:/sample:ro", sample_dir.display()))
+    // Use the host's scanner as entrypoint via a generic image that can
+    // execute a static/host binary is hard; instead mount and use alpine.
+    .args(["alpine:3.20", &format!("/scanner/{scanner_name}")]);
+    // Rewrite job to container paths.
+    let job = job_json.replace(
+        &sample_path.display().to_string(),
+        &format!("/sample/{sample_name}"),
+    );
+    // Also force sample_path key if JSON used absolute path already handled.
+    let job = if job.contains("/sample/") {
+        job
+    } else {
+        serde_json::json!({
+            "rules": serde_json::from_str::<serde_json::Value>(job_json)
+                .ok()
+                .and_then(|v| v.get("rules").cloned())
+                .unwrap_or_default(),
+            "sample_path": format!("/sample/{sample_name}"),
+        })
+        .to_string()
+    };
+
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| format!("docker run spawn: {e}"))?;
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let job_bytes = job.into_bytes();
+    let write_task = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt;
+        let _ = stdin.write_all(&job_bytes).await;
+        let _ = stdin.shutdown().await;
+    });
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(res) => res.map_err(|e| format!("docker wait: {e}"))?,
+        Err(_) => {
+            let _ = write_task.await;
+            return Ok(serde_json::json!({
+                "status": "timeout", "matches": [], "duration_ms": timeout.as_millis() as i64,
+                "error_code": format!("gvisor scan exceeded {}ms", timeout.as_millis()),
+            }));
+        }
+    };
+    let _ = write_task.await;
+    if output.stdout.len() > output_cap {
+        return Ok(serde_json::json!({
+            "status": "error", "matches": [], "duration_ms": 0,
+            "error_code": format!("scanner output exceeded {output_cap} byte cap"),
+        }));
+    }
+    if !output.status.success() && output.stdout.is_empty() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "gvisor docker run failed (exit {:?}): {err}",
+            output.status.code()
+        ));
+    }
+    serde_json::from_slice(&output.stdout).map_err(|e| {
+        format!(
+            "gvisor scanner invalid JSON ({e}); stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+async fn run_via_runsc(
+    scanner: &Path,
+    sample_dir: &Path,
+    sample_name: &str,
+    job_json: &str,
+    timeout: Duration,
+    output_cap: usize,
+) -> std::result::Result<serde_json::Value, String> {
+    // Direct runsc do rootless is complex (needs OCI bundle). Prefer docker
+    // path; bare runsc without bundle still fails closed with a clear error
+    // unless CORPUS_RUNSC_BUNDLE is set.
+    if let Ok(bundle) = std::env::var("CORPUS_RUNSC_BUNDLE") {
+        let mut cmd = tokio::process::Command::new("runsc");
+        cmd.args(["--network=none", "run", "-bundle", &bundle, "corpus-scan"]);
+        let _ = (
+            scanner,
+            sample_dir,
+            sample_name,
+            job_json,
+            timeout,
+            output_cap,
+        );
+        return Err(format!(
+            "runsc bundle mode configured ({bundle}) but OCI bundle execution \
+             is not wired in this build; use docker --runtime=runsc"
+        ));
+    }
+    // Fall through message: try docker if available.
+    if which_on_path("docker") {
+        return run_via_docker_runsc(
+            scanner,
+            &sample_dir.join(sample_name),
+            job_json,
+            timeout,
+            output_cap,
+        )
+        .await;
+    }
+    Err(
+        "runsc is on PATH but CORPUS_RUNSC_BUNDLE is unset and docker is \
+         unavailable; register runsc as a Docker runtime (docs/deploy.md)"
+            .into(),
+    )
 }
 
 fn error_outcome(msg: &str) -> ScanOutcome {

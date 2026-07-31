@@ -9,7 +9,7 @@ use corpus_core::hash;
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(name = "corpusctl", about = "Corpus platform CLI (Milestone 0)")]
+#[command(name = "corpusctl", about = "Corpus platform CLI")]
 struct Cli {
     /// Server base URL.
     #[arg(
@@ -23,6 +23,11 @@ struct Cli {
     /// when omitted. Prefer an explicit value for multi-tenant work.
     #[arg(long, env = "CORPUS_TENANT")]
     tenant: Option<String>,
+
+    /// Admin API token (`CORPUS_ADMIN_TOKEN` on the server). Required when
+    /// the server enforces admin auth.
+    #[arg(long, env = "CORPUS_ADMIN_TOKEN")]
+    admin_token: Option<String>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -326,9 +331,16 @@ enum HuntsCmd {
         #[arg(long)]
         bundle: String,
     },
-    /// Execute a hunt on the server (single-node, synchronous).
+    /// Enqueue a hunt on the server and poll until terminal state.
+    /// Pass `--no-wait` to return after enqueue (async).
     Run {
         hunt_id: Uuid,
+        /// Return immediately after enqueue; do not poll for completion.
+        #[arg(long)]
+        no_wait: bool,
+        /// Max seconds to wait for completion (default 600).
+        #[arg(long, default_value = "600")]
+        wait_secs: u64,
     },
     Status {
         hunt_id: Uuid,
@@ -355,23 +367,28 @@ struct Client {
     http: reqwest::Client,
     base: String,
     tenant: Option<String>,
+    admin_token: Option<String>,
 }
 
 impl Client {
-    fn new(base: String, tenant: Option<String>) -> Self {
+    fn new(base: String, tenant: Option<String>, admin_token: Option<String>) -> Self {
         Client {
             http: reqwest::Client::new(),
             base,
             tenant,
+            admin_token,
         }
     }
 
     fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
-        let b = self.http.request(method, format!("{}{path}", self.base));
-        match &self.tenant {
-            Some(t) => b.header("x-corpus-tenant", t),
-            None => b,
+        let mut b = self.http.request(method, format!("{}{path}", self.base));
+        if let Some(t) = &self.tenant {
+            b = b.header("x-corpus-tenant", t);
         }
+        if let Some(tok) = &self.admin_token {
+            b = b.header("authorization", format!("Bearer {tok}"));
+        }
+        b
     }
 
     async fn send_raw(&self, rb: reqwest::RequestBuilder) -> Result<(reqwest::StatusCode, String)> {
@@ -769,13 +786,17 @@ async fn resolve_rule_ids(client: &Client, specs: &[String]) -> Result<Vec<Uuid>
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let client = Client::new(cli.server.trim_end_matches('/').to_string(), cli.tenant);
+    let client = Client::new(
+        cli.server.trim_end_matches('/').to_string(),
+        cli.tenant,
+        cli.admin_token,
+    );
 
     match cli.cmd {
         Cmd::Tenants { cmd } => match cmd {
             TenantsCmd::Create { slug, name } => {
                 // Tenant create is global; no X-Corpus-Tenant required.
-                let bare = Client::new(client.base.clone(), None);
+                let bare = Client::new(client.base.clone(), None, client.admin_token.clone());
                 let t: TenantResponse = bare
                     .send(
                         bare.req(reqwest::Method::POST, "/api/v1/tenants")
@@ -788,7 +809,7 @@ async fn main() -> Result<()> {
                 );
             }
             TenantsCmd::List => {
-                let bare = Client::new(client.base.clone(), None);
+                let bare = Client::new(client.base.clone(), None, client.admin_token.clone());
                 let tenants: Vec<TenantResponse> = bare
                     .send(bare.req(reqwest::Method::GET, "/api/v1/tenants"))
                     .await?;
@@ -797,7 +818,7 @@ async fn main() -> Result<()> {
                 }
             }
             TenantsCmd::Get { id_or_slug } => {
-                let bare = Client::new(client.base.clone(), None);
+                let bare = Client::new(client.base.clone(), None, client.admin_token.clone());
                 let t: TenantResponse = bare
                     .send(bare.req(
                         reqwest::Method::GET,
@@ -1026,14 +1047,43 @@ async fn main() -> Result<()> {
                     .await?;
                 println!("hunt_id: {} state: {}", hunt.id, hunt.state);
             }
-            HuntsCmd::Run { hunt_id } => {
+            HuntsCmd::Run {
+                hunt_id,
+                no_wait,
+                wait_secs,
+            } => {
                 let hunt: HuntResponse = client
                     .send(client.req(
                         reqwest::Method::POST,
                         &format!("/api/v1/hunts/{hunt_id}/run"),
                     ))
                     .await?;
-                print_hunt(&hunt);
+                if no_wait {
+                    print_hunt(&hunt);
+                } else {
+                    let deadline =
+                        std::time::Instant::now() + std::time::Duration::from_secs(wait_secs);
+                    let mut hunt = hunt;
+                    loop {
+                        if matches!(
+                            hunt.state.as_str(),
+                            "COMPLETED" | "COMPLETED_PARTIAL" | "FAILED"
+                        ) {
+                            break;
+                        }
+                        if std::time::Instant::now() > deadline {
+                            bail!("hunt {hunt_id} still {} after {wait_secs}s", hunt.state);
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                        hunt = client
+                            .send(
+                                client
+                                    .req(reqwest::Method::GET, &format!("/api/v1/hunts/{hunt_id}")),
+                            )
+                            .await?;
+                    }
+                    print_hunt(&hunt);
+                }
             }
             HuntsCmd::Status { hunt_id } => {
                 let hunt: HuntResponse = client
