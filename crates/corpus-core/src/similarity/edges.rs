@@ -142,8 +142,14 @@ pub async fn union_groups(pool: &PgPool, tenant: Uuid, a: Uuid, b: Uuid) -> Resu
                 .execute(pool)
                 .await?;
         }
-        (Some(g), None) => add_member(pool, tenant, g, b).await?,
-        (None, Some(g)) => add_member(pool, tenant, g, a).await?,
+        (Some(g), None) => {
+            add_member(pool, tenant, g, b).await?;
+            fire_variant_join(pool, tenant, g, b).await?;
+        }
+        (None, Some(g)) => {
+            add_member(pool, tenant, g, a).await?;
+            fire_variant_join(pool, tenant, g, a).await?;
+        }
         (None, None) => {
             let g = Uuid::new_v4();
             sqlx::query("INSERT INTO variant_group (id, tenant_id, created_at) VALUES ($1,$2,$3)")
@@ -157,6 +163,22 @@ pub async fn union_groups(pool: &PgPool, tenant: Uuid, a: Uuid, b: Uuid) -> Resu
         }
         _ => {}
     }
+    Ok(())
+}
+
+/// Trigger event when an artifact joins an EXISTING variant group.
+async fn fire_variant_join(pool: &PgPool, tenant: Uuid, group: Uuid, artifact: Uuid) -> Result<()> {
+    crate::triggers::fire(
+        pool,
+        tenant,
+        crate::triggers::CONDITION_VARIANT_JOIN,
+        serde_json::json!({
+            "type": "variant_join",
+            "group_id": group,
+            "artifact_id": artifact,
+        }),
+    )
+    .await?;
     Ok(())
 }
 

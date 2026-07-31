@@ -37,6 +37,35 @@ struct OccurrenceRow {
     artifact_sha256: Vec<u8>,
 }
 
+async fn attestation_for(pool: &PgPool, tenant_id: Uuid, hunt: &Option<crate::dto::HuntResponse>) -> Result<crate::dto::Attestation> {
+    // With a hunt, attest against ITS pinned watermark and planned set;
+    // otherwise against the current endpoint corpus.
+    let (watermark, evaluated) = if let Some(h) = hunt {
+        (h.corpus_watermark.unwrap_or(0), h.planned_artifacts)
+    } else {
+        let w: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(seq), 0) FROM artifact WHERE tenant_id = $1 AND storage_state = 'committed' AND scope = 'endpoint'",
+        )
+        .bind(tenant_id)
+        .fetch_one(pool)
+        .await?;
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM artifact WHERE tenant_id = $1 AND storage_state = 'committed' AND scope = 'endpoint'",
+        )
+        .bind(tenant_id)
+        .fetch_one(pool)
+        .await?;
+        (w, n)
+    };
+    Ok(crate::dto::Attestation {
+        result: "no_match".into(),
+        corpus_watermark: watermark,
+        artifacts_evaluated: evaluated,
+        evaluated_at: Utc::now(),
+        scope: "endpoint".into(),
+    })
+}
+
 async fn build_report(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -47,6 +76,9 @@ async fn build_report(
     expand_variants: bool,
 ) -> Result<BlastRadiusReport> {
     if artifact_ids.is_empty() {
+        // Proof of absence (M5): "no match across the complete retained
+        // history as of this watermark" is an evidentiary output.
+        let attestation = attestation_for(pool, tenant_id, &hunt).await?;
         return Ok(BlastRadiusReport {
             generated_at: Utc::now(),
             tenant_id,
@@ -57,6 +89,7 @@ async fn build_report(
             occurrences: vec![],
             verification_state: HISTORICAL_OBSERVATION_ONLY.to_string(),
             variant_expansion: None,
+            attestation: Some(attestation),
         });
     }
 
@@ -102,22 +135,35 @@ async fn build_report(
         entry.last_observed = entry.last_observed.max(occ.observed_at);
     }
 
+    let mut artifact_views = Vec::new();
+    for a in artifacts {
+        let prev = crate::analyst::prevalence_for(pool, tenant_id, a.id).await?;
+        let opinion = crate::opinions::current_opinion(pool, tenant_id, a.id)
+            .await?
+            .map(|o| o.opinion);
+        artifact_views.push(BlastRadiusArtifact {
+            artifact_id: a.id,
+            sha256: hex::encode(&a.sha256),
+            size_bytes: a.size_bytes,
+            artifact_class: a.artifact_class,
+            first_committed_at: a.first_committed_at,
+            matched_rules: matched_rules.get(&a.id).cloned().unwrap_or_default(),
+            prevalence: Some(crate::dto::PrevalenceView {
+                host_count: prev.host_count,
+                path_count: prev.path_count,
+                first_observed: prev.first_observed,
+                last_observed: prev.last_observed,
+            }),
+            opinion,
+        });
+    }
+
     Ok(BlastRadiusReport {
         generated_at: Utc::now(),
         tenant_id,
         query,
         hunt,
-        artifacts: artifacts
-            .into_iter()
-            .map(|a| BlastRadiusArtifact {
-                artifact_id: a.id,
-                sha256: hex::encode(&a.sha256),
-                size_bytes: a.size_bytes,
-                artifact_class: a.artifact_class,
-                first_committed_at: a.first_committed_at,
-                matched_rules: matched_rules.get(&a.id).cloned().unwrap_or_default(),
-            })
-            .collect(),
+        artifacts: artifact_views,
         hosts: hosts.into_values().collect(),
         occurrences: occurrences
             .into_iter()
@@ -137,6 +183,7 @@ async fn build_report(
         } else {
             None
         },
+        attestation: None,
     })
 }
 
@@ -218,6 +265,8 @@ async fn expand_variants_for(
                 artifact_class: a.artifact_class,
                 first_committed_at: a.first_committed_at,
                 matched_rules: vec![],
+                prevalence: None,
+                opinion: None,
             })
             .collect(),
         group_occurrences: group_occurrences
