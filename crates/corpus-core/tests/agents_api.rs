@@ -29,7 +29,12 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     };
     let pool = db::connect(&url).await.unwrap();
     db::migrate(&pool).await.unwrap();
+    // FK-scoped world: the tenant must exist and be active first.
     let tenant = Uuid::new_v4();
+    let slug = format!("itest-{}", &tenant.simple().to_string()[..8]);
+    corpus_core::tenant::ensure_tenant(&pool, tenant, &slug, "Agent API integration test")
+        .await
+        .unwrap();
 
     // --- enrollment: one-time token exchange
     let tok = agents::create_enrollment_token(&pool, tenant, "itest", Some(3600)).await.unwrap();

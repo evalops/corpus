@@ -30,6 +30,9 @@ pub enum Error {
 
     #[error("bad request: {0}")]
     BadRequest(String),
+
+    #[error("forbidden: {0}")]
+    Forbidden(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

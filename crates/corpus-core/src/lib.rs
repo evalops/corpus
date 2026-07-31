@@ -16,11 +16,12 @@ pub mod registry;
 pub mod report;
 pub mod rules;
 pub mod scan;
+pub mod tenant;
 
 use uuid::Uuid;
 
-/// M0 is single-tenant; every request that does not carry an explicit
-/// `X-Corpus-Tenant` header is scoped to this tenant.
+/// Well-known default tenant (slug `default`), seeded by migration.
+/// Requests without an `X-Corpus-Tenant` header resolve here.
 pub const DEFAULT_TENANT: Uuid = Uuid::from_u128(1);
 
 pub const ENGINE_VERSION: &str = concat!("yara-x-", env!("CORPUS_YARA_X_VERSION"));

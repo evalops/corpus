@@ -15,9 +15,10 @@ struct Cli {
     #[arg(long, env = "CORPUS_SERVER_URL", default_value = "http://127.0.0.1:8080")]
     server: String,
 
-    /// Tenant UUID (M0: optional; defaults server-side to the default tenant).
+    /// Tenant UUID or slug. Defaults server-side to the seeded `default` tenant
+    /// when omitted. Prefer an explicit value for multi-tenant work.
     #[arg(long, env = "CORPUS_TENANT")]
-    tenant: Option<Uuid>,
+    tenant: Option<String>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -25,6 +26,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Tenant registry operations.
+    Tenants {
+        #[command(subcommand)]
+        cmd: TenantsCmd,
+    },
     /// Import a directory: classify, hash, announce, upload on
     /// UPLOAD_REQUIRED, finalize. Dedup hits still record occurrences.
     Import {
@@ -99,6 +105,21 @@ enum CoverageCmd {
 }
 
 #[derive(Subcommand)]
+enum TenantsCmd {
+    /// Create a tenant (slug must be unique, lowercase alphanumeric + hyphens).
+    Create {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        name: String,
+    },
+    /// List all tenants.
+    List,
+    /// Show one tenant by UUID or slug.
+    Get { id_or_slug: String },
+}
+
+#[derive(Subcommand)]
 enum RulesCmd {
     /// Validate-compile and register a single-rule .yar file.
     Add { file: String },
@@ -147,26 +168,35 @@ enum ReportCmd {
 struct Client {
     http: reqwest::Client,
     base: String,
-    tenant: Option<Uuid>,
+    tenant: Option<String>,
 }
 
 impl Client {
-    fn new(base: String, tenant: Option<Uuid>) -> Self {
-        Client { http: reqwest::Client::new(), base, tenant }
+    fn new(base: String, tenant: Option<String>) -> Self {
+        Client {
+            http: reqwest::Client::new(),
+            base,
+            tenant,
+        }
     }
 
     fn req(&self, method: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
         let b = self.http.request(method, format!("{}{path}", self.base));
-        match self.tenant {
-            Some(t) => b.header("x-corpus-tenant", t.to_string()),
+        match &self.tenant {
+            Some(t) => b.header("x-corpus-tenant", t),
             None => b,
         }
     }
 
-    async fn send<T: serde::de::DeserializeOwned>(&self, rb: reqwest::RequestBuilder) -> Result<T> {
+    async fn send_raw(&self, rb: reqwest::RequestBuilder) -> Result<(reqwest::StatusCode, String)> {
         let resp = rb.send().await?;
         let status = resp.status();
         let body = resp.text().await?;
+        Ok((status, body))
+    }
+
+    async fn send<T: serde::de::DeserializeOwned>(&self, rb: reqwest::RequestBuilder) -> Result<T> {
+        let (status, body) = self.send_raw(rb).await?;
         if !status.is_success() {
             bail!("server returned {status}: {body}");
         }
@@ -297,8 +327,16 @@ async fn resolve_rule_ids(client: &Client, specs: &[String]) -> Result<Vec<Uuid>
                 .iter()
                 .find(|r| r.stable_id == *spec)
                 .map(|r| r.id)
-                .ok_or_else(|| anyhow::anyhow!("unknown rule {spec:?} (known: {})",
-                    rules.iter().map(|r| r.stable_id.as_str()).collect::<Vec<_>>().join(", ")))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "unknown rule {spec:?} (known: {})",
+                        rules
+                            .iter()
+                            .map(|r| r.stable_id.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
         })
         .collect()
 }
@@ -309,6 +347,35 @@ async fn main() -> Result<()> {
     let client = Client::new(cli.server.trim_end_matches('/').to_string(), cli.tenant);
 
     match cli.cmd {
+        Cmd::Tenants { cmd } => match cmd {
+            TenantsCmd::Create { slug, name } => {
+                // Tenant create is global; no X-Corpus-Tenant required.
+                let bare = Client::new(client.base.clone(), None);
+                let t: TenantResponse = bare
+                    .send(
+                        bare.req(reqwest::Method::POST, "/api/v1/tenants")
+                            .json(&TenantCreateRequest { slug, name }),
+                    )
+                    .await?;
+                println!("tenant_id: {} slug: {} name: {} status: {}", t.id, t.slug, t.name, t.status);
+            }
+            TenantsCmd::List => {
+                let bare = Client::new(client.base.clone(), None);
+                let tenants: Vec<TenantResponse> =
+                    bare.send(bare.req(reqwest::Method::GET, "/api/v1/tenants")).await?;
+                for t in tenants {
+                    println!("{} {} {} {}", t.id, t.slug, t.status, t.name);
+                }
+            }
+            TenantsCmd::Get { id_or_slug } => {
+                let bare = Client::new(client.base.clone(), None);
+                let t: TenantResponse = bare
+                    .send(bare.req(reqwest::Method::GET, &format!("/api/v1/tenants/{id_or_slug}")))
+                    .await?;
+                println!("{} {} {} {}", t.id, t.slug, t.status, t.name);
+            }
+        },
+
         Cmd::Import { dir, capture_reason } => cmd_import(&client, &dir, &capture_reason).await?,
 
         Cmd::Rules { cmd } => match cmd {

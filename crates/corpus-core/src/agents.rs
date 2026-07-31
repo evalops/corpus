@@ -63,6 +63,12 @@ pub async fn enroll(pool: &PgPool, req: &EnrollRequest) -> Result<EnrollResponse
     .await?;
     let (tenant_id,) = row.ok_or_else(|| Error::BadRequest("invalid, expired, or consumed enrollment token".into()))?;
 
+    // Enrollment is a write path: the token's tenant must be active.
+    let tenant = crate::tenant::get_tenant(pool, tenant_id).await?;
+    if tenant.status != "active" {
+        return Err(Error::Forbidden(format!("tenant {} is {}", tenant.slug, tenant.status)));
+    }
+
     let agent_id = Uuid::new_v4();
     let agent_token = format!("cpagent-{}", Uuid::new_v4());
     sqlx::query(

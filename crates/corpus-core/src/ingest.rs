@@ -34,7 +34,7 @@ async fn insert_occurrence<'e>(
           artifact_sha256, event_type, capture_reason, observed_at, received_at,
           path, file_size, file_mtime, process_evidence)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-         ON CONFLICT (agent_id, boot_id, agent_sequence) DO NOTHING",
+         ON CONFLICT (tenant_id, agent_id, boot_id, agent_sequence) DO NOTHING",
     )
     .bind(Uuid::new_v4())
     .bind(i.tenant_id)

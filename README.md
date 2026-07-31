@@ -6,7 +6,8 @@ those bytes were observed. New intelligence (YARA-X rules, hashes) can then
 be evaluated against bytes retained before the intelligence existed, and
 matches are joined back to host occurrences for blast-radius reporting.
 
-Status: Milestone 1 (Linux agent). Apache-2.0.
+Status: Milestone 1 (Linux agent) on a first-class multi-tenant spine.
+Apache-2.0.
 
 > Dev-profile warning: the Compose stack, filesystem CAS, and bearer-token
 > agent auth are development conveniences. They are not a safe production
@@ -18,24 +19,26 @@ Status: Milestone 1 (Linux agent). Apache-2.0.
 endpoint (Linux)                     control plane
 ┌───────────────────────┐            ┌──────────────────────────────────┐
 │ corpus-agent          │            │ corpus-server (axum, /api/v1)    │
-│  fanotify / poll scan │  REST      │  enroll/heartbeat/gaps           │
+│  fanotify / poll scan │  REST      │  tenants, enroll/heartbeat/gaps  │
 │  capture state mach.  │──────────▶ │  ingest: announce/upload/finalize│
 │  stable read + spool  │  bearer    │  rules/bundles, hunts, reports   │
 │  SQLite WAL queue     │            │        │          │              │
 └───────────────────────┘            │  PostgreSQL 16   filesystem CAS  │
                                      └──────▲───────────────────────────┘
                                             │ REST
-                                     corpusctl (import, rules, bundles,
-                                     hunts, blast-radius, agents, gaps)
+                                     corpusctl (tenants, import, rules,
+                                     bundles, hunts, blast-radius,
+                                     agents, gaps)
 ```
 
 - `crates/corpus-core` — shared types/logic: classification, CAS, ingest,
-  registry, hunt engine, reports, agent endpoints.
+  tenant registry, rule registry, hunt engine, reports, agent endpoints.
 - `crates/corpus-server` — REST API; owns all writes; runs migrations.
 - `crates/corpusctl` — operator CLI.
 - `crates/corpus-agent` — Linux user-mode agent (spec 10): enrollment,
   checkpointed baseline, fanotify sensor with poll-reconcile fallback,
   stable-read capture state machine, SQLite local state, heartbeats.
+- `migrations/` — SQL migrations (applied by the server at boot).
 
 ## Quickstart
 
@@ -46,16 +49,18 @@ docker compose up -d postgres     # PostgreSQL 16 on :5433
 cargo run -p corpus-server        # migrates, serves 127.0.0.1:8080
 ```
 
-M0 flow — CLI import, rule, retro-hunt, blast radius:
+M0 flow — CLI import, rule, retro-hunt, blast radius (omit `--tenant` to
+use the seeded `default` tenant):
 
 ```sh
 bash scripts/gen-testdata.sh testdata
-cargo run -p corpusctl -- import testdata
-cargo run -p corpusctl -- rules add testdata/corpus_demo_marker.yar
-cargo run -p corpusctl -- bundles publish --rule CorpusDemoMarker --activate
-cargo run -p corpusctl -- hunts create --bundle <digest>
-cargo run -p corpusctl -- hunts run <hunt-id>
-cargo run -p corpusctl -- report blast-radius --hunt <hunt-id>
+cargo run -p corpusctl -- tenants create --slug acme --name "Acme Corp"   # optional
+cargo run -p corpusctl -- --tenant acme import testdata
+cargo run -p corpusctl -- --tenant acme rules add testdata/corpus_demo_marker.yar
+cargo run -p corpusctl -- --tenant acme bundles publish --rule CorpusDemoMarker --activate
+cargo run -p corpusctl -- --tenant acme hunts create --bundle <digest>
+cargo run -p corpusctl -- --tenant acme hunts run <hunt-id>
+cargo run -p corpusctl -- --tenant acme report blast-radius --hunt <hunt-id>
 ```
 
 M1 flow — agent on Linux (as root; fanotify needs CAP_SYS_ADMIN):
@@ -73,6 +78,27 @@ Scripted end-to-end demos: `just demo` (M0), `just demo-agent` (M1; runs
 the agent in a privileged Linux container). Other recipes: `just up`,
 `down`, `build`, `test`, `clippy`, `serve`, `reset`.
 
+## Tenancy
+
+Multi-tenancy is first-class:
+
+- `tenant` table with unique slug, display name, and `active`/`suspended`
+  status. Migration seeds a well-known default tenant
+  (`00000000-0000-0000-0000-000000000001`, slug `default`).
+- `X-Corpus-Tenant` accepts a **UUID or slug**. Missing header → `default`.
+  Unknown or suspended tenants are rejected (`404` / `403`). Write paths —
+  including agent enrollment — resolve an active tenant first.
+- Every data table carries `tenant_id` with a foreign key to `tenant`. All
+  queries are tenant-scoped. Dedup, occurrence uniqueness
+  (`tenant_id, agent_id, boot_id, agent_sequence`), scan cache, and CAS
+  object keys (`objects/{tenant_id}/{sha256}`) are per-tenant.
+- CLI: `corpusctl tenants create|list|get`, plus `--tenant` /
+  `CORPUS_TENANT` (UUID or slug) on every other command.
+
+AuthN/AuthZ beyond the tenant header and agent bearer tokens (API keys,
+RBAC) is later scope. The header is a trust boundary only inside a private
+network / local dev.
+
 ## Design invariants honored so far
 
 - Server recomputes SHA-256 from uploaded bytes; client hash is a hint
@@ -82,8 +108,9 @@ the agent in a privileged Linux container). Other recipes: `just up`,
 - Occurrences are append-only with observed/received timestamps and
   per-agent boot/sequence ordering (12.4).
 - Bundles are immutable, digest-addressed (14.5); hunts pin a corpus
-  watermark (15.1); scan cache keyed by (tenant, artifact, bundle digest,
-  engine version, scan config) (15.4); matches commit idempotently (#8).
+  watermark and re-runs keep it (planned set is immutable) (15.1); scan
+  cache keyed by (tenant, artifact, bundle digest, engine version, scan
+  config) (15.4); matches commit idempotently (#8).
 - Coverage gaps are data: TOO_LARGE, PERMISSION_DENIED,
   DELETED_BEFORE_READ, CHANGED_DURING_READ, SENSOR_OVERFLOW, SPOOL_FULL,
   UPLOAD_FAILED all land in `capture_attempt` (2.2).
@@ -116,8 +143,7 @@ the agent in a privileged Linux container). Other recipes: `just up`,
 
 - **Auth**: enrollment token → bearer token over plain HTTP; no mTLS yet
   (M1-production hardening). Admin/CLI endpoints are unauthenticated in
-  dev. Tenant is a header stub (`X-Corpus-Tenant`, one default tenant);
-  `tenant_id` is threaded through every table and query.
+  dev beyond the tenant header.
 - **Spool**: plaintext with 0600/0700 permissions; encryption and key
   wrapping deferred (10.3 staged approach).
 - **fanotify FAN_MOVED_TO**: rejected (EINVAL) on mount marks on tested
@@ -138,18 +164,20 @@ the agent in a privileged Linux container). Other recipes: `just up`,
 ## Testing
 
 ```sh
-cargo test --workspace                                # 30 unit tests, hermetic
+cargo test --workspace                                # unit tests, hermetic
 cargo clippy --all-targets                            # expected: 0 warnings
 CORPUS_TEST_DATABASE_URL=postgres://corpus:corpus@127.0.0.1:5433/corpus \
     cargo test -p corpus-core                         # +2 real-DB integration tests
 ```
 
 Unit tests: hash recompute/mismatch, bundle digest determinism,
-magic-byte classification, scan cache key, CAS create-if-absent, capture
-state machine durability, stable-read mutation detection (injected
-mid-read mutation), baseline checkpoint resume after a simulated crash,
-reconcile change detection, gap batching. Integration tests: full
-ingest→hunt→report path; enroll→heartbeat→gaps→dedup-occurrence path.
+magic-byte classification, scan cache key, CAS create-if-absent, tenant
+slug validation, capture state machine durability, stable-read mutation
+detection (injected mid-read mutation), baseline checkpoint resume after
+a simulated crash, reconcile change detection, gap batching. Integration
+tests: full ingest→hunt→report path with sticky watermarks and
+cross-tenant isolation (no shared dedup, no cross-tenant reads), and the
+enroll→heartbeat→gaps→dedup-occurrence agent path.
 
 Verified on real hosts (2026-07-30): agent on macOS (poll sensor) and on
 a Debian x86_64 LXC over LAN (fanotify, root) against the dev server —
