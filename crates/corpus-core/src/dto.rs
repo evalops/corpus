@@ -242,6 +242,55 @@ pub struct CoverageGapRow {
 
 // ---------- blast radius ----------
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimilarEdgeView {
+    pub other_artifact: Uuid,
+    pub other_sha256: String,
+    pub edge_type: String,
+    pub model_version: String,
+    pub score: f64,
+    pub evidence: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimilarResponse {
+    pub artifact_id: Uuid,
+    pub sha256: String,
+    pub edges: Vec<SimilarEdgeView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariantMember {
+    pub artifact_id: Uuid,
+    pub sha256: String,
+    pub artifact_class: String,
+    pub first_committed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariantsResponse {
+    pub artifact_id: Uuid,
+    pub sha256: String,
+    pub group_id: Option<Uuid>,
+    pub members: Vec<VariantMember>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackfillResponse {
+    pub analyzed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VariantExpansion {
+    /// Strong-edge group members beyond the query's matched artifacts.
+    pub group_artifacts: Vec<BlastRadiusArtifact>,
+    pub group_occurrences: Vec<BlastRadiusOccurrence>,
+    /// Weak neighbors (byte_similar, shared_provenance) — leads only,
+    /// never automatic family membership (spec 16.4, 28.5).
+    pub weak_leads: Vec<SimilarEdgeView>,
+}
+
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlastRadiusArtifact {
@@ -285,6 +334,9 @@ pub struct BlastRadiusReport {
     /// M0 reports historical observation only; no current-state
     /// verification task exists yet (spec 17.2 is later scope).
     pub verification_state: String,
+    /// Present only when the report was requested with expand_variants.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant_expansion: Option<VariantExpansion>,
 }
 
 // ---------- intel (M4 vault bootstrap) ----------

@@ -10,3 +10,4 @@ Cargo.lock.bak
 /bootstrap-demo
 /.demo-bootstrap-server.log
 /demo-sim
+/.demo-similarity-server.log

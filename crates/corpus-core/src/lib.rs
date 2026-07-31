@@ -18,6 +18,7 @@ pub mod registry;
 pub mod report;
 pub mod rules;
 pub mod scan;
+pub mod similarity;
 pub mod tenant;
 
 use uuid::Uuid;

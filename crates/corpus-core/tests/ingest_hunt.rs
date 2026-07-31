@@ -307,7 +307,7 @@ async fn ingest_hunt_and_blast_radius_end_to_end() {
     assert_eq!(hunt3.corpus_watermark, pinned_watermark);
 
     // --- blast radius by hunt and by exact hash
-    let br = report::by_hunt(&pool, tenant_id, hunt.id).await.unwrap();
+    let br = report::by_hunt(&pool, tenant_id, hunt.id, false).await.unwrap();
     assert_eq!(br.artifacts.len(), 1);
     assert_eq!(br.artifacts[0].sha256, marker_sha);
     assert_eq!(br.artifacts[0].matched_rules, vec!["CorpusDemoMarker"]);
@@ -316,14 +316,14 @@ async fn ingest_hunt_and_blast_radius_end_to_end() {
     assert_eq!(br.hosts[0].host_name, "test-host");
     assert!(br.verification_state.contains("historical_observation_only"));
 
-    let br2 = report::by_sha256(&pool, tenant_id, &fwd_sha).await.unwrap();
+    let br2 = report::by_sha256(&pool, tenant_id, &fwd_sha, false).await.unwrap();
     assert_eq!(br2.artifacts.len(), 1);
     assert_eq!(br2.occurrences.len(), 1);
 
     // --- multi-tenant isolation (invariant #3)
     let other_id = fresh_tenant(&pool, "other").await;
     // Other tenant cannot see artifacts/hashes from the primary tenant.
-    let other_br = report::by_sha256(&pool, other_id, &marker_sha).await.unwrap();
+    let other_br = report::by_sha256(&pool, other_id, &marker_sha, false).await.unwrap();
     assert!(other_br.artifacts.is_empty());
     assert!(other_br.occurrences.is_empty());
     assert!(registry::list_rules(&pool, other_id).await.unwrap().is_empty());

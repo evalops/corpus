@@ -229,6 +229,7 @@ async fn run_hunt(
 struct BlastRadiusQuery {
     hunt_id: Option<Uuid>,
     sha256: Option<String>,
+    expand_variants: Option<bool>,
 }
 
 async fn blast_radius(
@@ -237,11 +238,45 @@ async fn blast_radius(
     Query(q): Query<BlastRadiusQuery>,
 ) -> Result<Json<BlastRadiusReport>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
+    let expand = q.expand_variants.unwrap_or(false);
     match (q.hunt_id, q.sha256) {
-        (Some(id), None) => Ok(Json(report::by_hunt(&st.pool, t, id).await?)),
-        (None, Some(sha)) => Ok(Json(report::by_sha256(&st.pool, t, &sha).await?)),
+        (Some(id), None) => Ok(Json(report::by_hunt(&st.pool, t, id, expand).await?)),
+        (None, Some(sha)) => Ok(Json(report::by_sha256(&st.pool, t, &sha, expand).await?)),
         _ => Err(Error::BadRequest("provide exactly one of hunt_id or sha256".into()).into()),
     }
+}
+
+async fn similar(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Result<Json<SimilarResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    corpus_core::similarity::edges::similar_view(&st.pool, t, &sha256)
+        .await?
+        .map(Json)
+        .ok_or_else(|| Error::NotFound(format!("artifact {sha256}")).into())
+}
+
+async fn variants(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(sha256): Path<String>,
+) -> Result<Json<VariantsResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    corpus_core::similarity::edges::variants_view(&st.pool, t, &sha256)
+        .await?
+        .map(Json)
+        .ok_or_else(|| Error::NotFound(format!("artifact {sha256}")).into())
+}
+
+async fn similarity_backfill(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<BackfillResponse>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let analyzed = corpus_core::similarity::edges::backfill(&st.pool, &st.cas, t).await?;
+    Ok(Json(BackfillResponse { analyzed }))
 }
 
 // ---------- agent endpoints (M1) ----------
@@ -416,6 +451,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/hunts/{hunt_id}", get(get_hunt))
         .route("/api/v1/hunts/{hunt_id}/run", post(run_hunt))
         .route("/api/v1/reports/blast-radius", get(blast_radius))
+        .route("/api/v1/artifacts/{sha256}/similar", get(similar))
+        .route("/api/v1/artifacts/{sha256}/variants", get(variants))
+        .route("/api/v1/similarity/backfill", post(similarity_backfill))
         .route("/api/v1/enrollment-tokens", post(create_enrollment_token))
         .route("/api/v1/agents/enroll", post(enroll))
         .route("/api/v1/agents/heartbeat", post(agent_heartbeat))

@@ -44,6 +44,7 @@ async fn build_report(
     hunt: Option<crate::dto::HuntResponse>,
     artifact_ids: &[Uuid],
     matched_rules: &BTreeMap<Uuid, Vec<String>>,
+    expand_variants: bool,
 ) -> Result<BlastRadiusReport> {
     if artifact_ids.is_empty() {
         return Ok(BlastRadiusReport {
@@ -55,6 +56,7 @@ async fn build_report(
             hosts: vec![],
             occurrences: vec![],
             verification_state: HISTORICAL_OBSERVATION_ONLY.to_string(),
+            variant_expansion: None,
         });
     }
 
@@ -130,11 +132,112 @@ async fn build_report(
             })
             .collect(),
         verification_state: HISTORICAL_OBSERVATION_ONLY.to_string(),
+        variant_expansion: if expand_variants {
+            Some(expand_variants_for(pool, tenant_id, artifact_ids).await?)
+        } else {
+            None
+        },
+    })
+}
+
+/// Spec 17.1 steps 2-3: resolve matched artifacts through their variant
+/// groups (strong edges) and list weak neighbors as clearly labeled leads.
+async fn expand_variants_for(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    artifact_ids: &[Uuid],
+) -> Result<crate::dto::VariantExpansion> {
+    use crate::dto::{BlastRadiusArtifact, BlastRadiusOccurrence, SimilarEdgeView, VariantExpansion};
+    use crate::similarity::edges;
+    use crate::similarity::model::edge_type;
+
+    let mut group_ids: Vec<Uuid> = Vec::new();
+    for id in artifact_ids {
+        let (_g, members) = edges::group_members(pool, tenant_id, *id).await?;
+        for (member, _sha) in members {
+            if !artifact_ids.contains(&member) && !group_ids.contains(&member) {
+                group_ids.push(member);
+            }
+        }
+    }
+
+    let group_artifacts = sqlx::query_as::<_, ArtifactRow>(
+        "SELECT id, sha256, size_bytes, artifact_class, first_committed_at
+         FROM artifact WHERE tenant_id = $1 AND id = ANY($2) ORDER BY first_committed_at",
+    )
+    .bind(tenant_id)
+    .bind(&group_ids)
+    .fetch_all(pool)
+    .await?;
+    let group_occurrences = if group_ids.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_as::<_, OccurrenceRow>(
+            "SELECT host_name, path, capture_reason, observed_at, received_at, process_evidence, artifact_sha256
+             FROM occurrence_event WHERE tenant_id = $1 AND artifact_id = ANY($2) ORDER BY observed_at",
+        )
+        .bind(tenant_id)
+        .bind(&group_ids)
+        .fetch_all(pool)
+        .await?
+    };
+
+    let mut weak_leads = Vec::new();
+    for id in artifact_ids {
+        for e in edges::edges_for(pool, tenant_id, *id).await? {
+            if !matches!(e.edge_type.as_str(), edge_type::BYTE_SIMILAR | edge_type::SHARED_PROVENANCE) {
+                continue;
+            }
+            let other = if e.src_artifact == *id { e.dst_artifact } else { e.src_artifact };
+            if artifact_ids.contains(&other) {
+                continue;
+            }
+            let sha: Vec<u8> = sqlx::query_scalar("SELECT sha256 FROM artifact WHERE tenant_id = $1 AND id = $2")
+                .bind(tenant_id)
+                .bind(other)
+                .fetch_one(pool)
+                .await?;
+            weak_leads.push(SimilarEdgeView {
+                other_artifact: other,
+                other_sha256: hex::encode(sha),
+                edge_type: e.edge_type,
+                model_version: e.model_version,
+                score: e.score,
+                evidence: e.evidence,
+            });
+        }
+    }
+
+    Ok(VariantExpansion {
+        group_artifacts: group_artifacts
+            .into_iter()
+            .map(|a| BlastRadiusArtifact {
+                artifact_id: a.id,
+                sha256: hex::encode(&a.sha256),
+                size_bytes: a.size_bytes,
+                artifact_class: a.artifact_class,
+                first_committed_at: a.first_committed_at,
+                matched_rules: vec![],
+            })
+            .collect(),
+        group_occurrences: group_occurrences
+            .into_iter()
+            .map(|o| BlastRadiusOccurrence {
+                artifact_sha256: hex::encode(&o.artifact_sha256),
+                host_name: o.host_name,
+                path: o.path,
+                capture_reason: o.capture_reason,
+                observed_at: o.observed_at,
+                received_at: o.received_at,
+                execution_evidence: o.process_evidence,
+            })
+            .collect(),
+        weak_leads,
     })
 }
 
 /// Blast radius of every artifact matched by a hunt (spec 17.1 step 1-5).
-pub async fn by_hunt(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid) -> Result<BlastRadiusReport> {
+pub async fn by_hunt(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid, expand_variants: bool) -> Result<BlastRadiusReport> {
     let hunt = hunts::get_hunt(pool, tenant_id, hunt_id).await?;
     let rows: Vec<(Uuid, String)> = sqlx::query_as(
         "SELECT artifact_id, rule_id FROM hunt_match WHERE tenant_id = $1 AND hunt_id = $2",
@@ -157,12 +260,13 @@ pub async fn by_hunt(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid) -> Result<Bl
         Some(hunt),
         &artifact_ids,
         &matched_rules,
+        expand_variants,
     )
     .await
 }
 
 /// Blast radius of one exact artifact hash (indexed lookup path).
-pub async fn by_sha256(pool: &PgPool, tenant_id: Uuid, sha256_hex: &str) -> Result<BlastRadiusReport> {
+pub async fn by_sha256(pool: &PgPool, tenant_id: Uuid, sha256_hex: &str, expand_variants: bool) -> Result<BlastRadiusReport> {
     let raw = crate::hash::hex_to_raw(sha256_hex)
         .map_err(|_| Error::BadRequest(format!("invalid sha256 hex: {sha256_hex:?}")))?;
     let artifact: Option<(Uuid,)> =
@@ -179,6 +283,7 @@ pub async fn by_sha256(pool: &PgPool, tenant_id: Uuid, sha256_hex: &str) -> Resu
         None,
         &artifact_ids,
         &BTreeMap::new(),
+        expand_variants,
     )
     .await
 }
