@@ -314,6 +314,17 @@ pub struct BlastRadiusArtifact {
     pub prevalence: Option<PrevalenceView>,
     /// Current human opinion (spec 5.5), if any.
     pub opinion: Option<String>,
+    /// Analyzer findings with evidence typing (spec 17.4) — e.g. CAPE
+    /// detonation results with DYNAMIC_BEHAVIOR.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<FindingView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct FindingView {
+    pub evidence_type: String,
+    pub category: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

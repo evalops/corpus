@@ -8,6 +8,7 @@ pub mod analyst;
 pub mod cas;
 pub mod classify;
 pub mod db;
+pub mod detonate;
 pub mod dto;
 pub mod error;
 pub mod hash;
