@@ -68,7 +68,14 @@ fn os_boot_id() -> String {
             let mut tv: libc::timeval = std::mem::zeroed();
             let mut len = std::mem::size_of::<libc::timeval>();
             let name = c"kern.boottime".as_ptr();
-            if libc::sysctlbyname(name, &mut tv as *mut _ as *mut libc::c_void, &mut len, std::ptr::null_mut(), 0) == 0 {
+            if libc::sysctlbyname(
+                name,
+                &mut tv as *mut _ as *mut libc::c_void,
+                &mut len,
+                std::ptr::null_mut(),
+                0,
+            ) == 0
+            {
                 return uuid::Uuid::new_v5(
                     &uuid::Uuid::NAMESPACE_OID,
                     format!("corpus-boot:{}:{}", tv.tv_sec, tv.tv_usec).as_bytes(),
@@ -88,7 +95,11 @@ fn os_boot_id() -> String {
             .map(|d| d.as_millis() as i128)
             .unwrap_or(0);
         let boot_ms = (now_ms - uptime_ms as i128) / 1000;
-        uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, format!("corpus-boot:{boot_ms}").as_bytes()).to_string()
+        uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_OID,
+            format!("corpus-boot:{boot_ms}").as_bytes(),
+        )
+        .to_string()
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
@@ -109,7 +120,10 @@ fn refresh_boot_identity(db: &StateDb, current: &str) -> Result<bool> {
 }
 
 async fn ensure_identity(cfg: &Config, db: &StateDb) -> Result<(uuid::Uuid, String)> {
-    if let (Some(id), Some(token)) = (db.get_identity("agent_id")?, db.get_identity("agent_token")?) {
+    if let (Some(id), Some(token)) = (
+        db.get_identity("agent_id")?,
+        db.get_identity("agent_token")?,
+    ) {
         return Ok((uuid::Uuid::parse_str(&id)?, token));
     }
     let token = cfg
@@ -147,7 +161,10 @@ fn mtls_uploader(cfg: &Config, db: &StateDb) -> Result<Uploader> {
     );
     match (ca, cert, key) {
         (Some(ca), Some(cert), Some(key)) => {
-            let base = cfg.agent_url.clone().unwrap_or_else(|| derive_agent_url(&cfg.server_url));
+            let base = cfg
+                .agent_url
+                .clone()
+                .unwrap_or_else(|| derive_agent_url(&cfg.server_url));
             Ok(Uploader::new_mtls(&base, &ca, &cert, &key)?)
         }
         _ => {
@@ -159,7 +176,9 @@ fn mtls_uploader(cfg: &Config, db: &StateDb) -> Result<Uploader> {
 
 fn derive_agent_url(server_url: &str) -> String {
     // http://host:8080 -> https://host:8443
-    let without_scheme = server_url.trim_start_matches("http://").trim_start_matches("https://");
+    let without_scheme = server_url
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
     let host = without_scheme.split(':').next().unwrap_or("127.0.0.1");
     format!("https://{host}:8443")
 }
@@ -187,7 +206,9 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
         uploader: mtls_uploader(&cfg, &db)?,
         cfg: cfg.clone(),
         db: db.clone(),
-        spool_cipher: Some(std::sync::Arc::new(spool_crypto::SpoolCipher::load_or_create(&cfg.state_dir)?)),
+        spool_cipher: Some(std::sync::Arc::new(
+            spool_crypto::SpoolCipher::load_or_create(&cfg.state_dir)?,
+        )),
         agent_id,
         boot_id,
         host_name,
@@ -221,7 +242,12 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
         // records prove "something changed while we were down" and trigger
         // an immediate reconciliation pass. Without volume read access the
         // journal read fails and the poll sensor covers recovery.
-        sensors::rdcw::start(db.clone(), &cfg.watch.paths, cfg.watch.exclusions.clone(), cfg.watch.debounce_ms);
+        sensors::rdcw::start(
+            db.clone(),
+            &cfg.watch.paths,
+            cfg.watch.exclusions.clone(),
+            cfg.watch.debounce_ms,
+        );
         db.set_identity("sensor", "rdcw_user_mode")?;
         for root in &cfg.watch.paths {
             let records = sensors::usn::read_journal(root, 0);
@@ -230,7 +256,12 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
                 let db2 = db.clone();
                 let cfg2 = cfg.clone();
                 tokio::task::spawn_blocking(move || {
-                    let _ = baseline::reconcile_scan(&db2, &cfg2.watch.paths, &cfg2.watch.exclusions, cfg2.watch.debounce_ms);
+                    let _ = baseline::reconcile_scan(
+                        &db2,
+                        &cfg2.watch.paths,
+                        &cfg2.watch.exclusions,
+                        cfg2.watch.debounce_ms,
+                    );
                 });
             }
         }
@@ -242,7 +273,13 @@ async fn run(cfg_path: PathBuf) -> Result<()> {
         let db2 = db.clone();
         let cfg2 = cfg.clone();
         tokio::task::spawn_blocking(move || {
-            match baseline::run_baseline(&db2, &cfg2.watch.paths, &cfg2.watch.exclusions, cfg2.watch.debounce_ms, None) {
+            match baseline::run_baseline(
+                &db2,
+                &cfg2.watch.paths,
+                &cfg2.watch.exclusions,
+                cfg2.watch.debounce_ms,
+                None,
+            ) {
                 Ok(r) => tracing::info!(
                     dirs_done = r.dirs_completed,
                     dirs_total = r.dirs_total,
@@ -317,12 +354,28 @@ async fn gap_flusher(rt: Arc<AgentRuntime>) {
 fn status(cfg_path: PathBuf) -> Result<()> {
     let cfg = Config::load(&cfg_path)?;
     let db = StateDb::open(&cfg.state_dir.join("agent.db"))?;
-    println!("agent_id:       {}", db.get_identity("agent_id")?.unwrap_or_else(|| "not enrolled".into()));
-    println!("sensor:         {}", db.get_identity("sensor")?.unwrap_or_else(|| "unknown".into()));
-    println!("baseline_state: {}", db.get_identity("baseline_state")?.unwrap_or_else(|| "unknown".into()));
+    println!(
+        "agent_id:       {}",
+        db.get_identity("agent_id")?
+            .unwrap_or_else(|| "not enrolled".into())
+    );
+    println!(
+        "sensor:         {}",
+        db.get_identity("sensor")?
+            .unwrap_or_else(|| "unknown".into())
+    );
+    println!(
+        "baseline_state: {}",
+        db.get_identity("baseline_state")?
+            .unwrap_or_else(|| "unknown".into())
+    );
     println!("queue_depth:    {}", db.queue_depth()?);
     println!("pending_gaps:   {}", db.pending_gaps(1000)?.len());
-    println!("sequence:       {}", db.get_identity("agent_sequence")?.unwrap_or_else(|| "0".into()));
+    println!(
+        "sequence:       {}",
+        db.get_identity("agent_sequence")?
+            .unwrap_or_else(|| "0".into())
+    );
     Ok(())
 }
 
@@ -361,7 +414,10 @@ mod tests {
 
         // New boot: returns "changed" and sequence restarts.
         assert!(refresh_boot_identity(&db, "boot-bbb").unwrap());
-        assert_eq!(db.get_identity("boot_id").unwrap().as_deref(), Some("boot-bbb"));
+        assert_eq!(
+            db.get_identity("boot_id").unwrap().as_deref(),
+            Some("boot-bbb")
+        );
         assert_eq!(db.next_sequence().unwrap(), 1);
     }
 
@@ -369,8 +425,15 @@ mod tests {
     fn identity_many_is_atomic_and_complete() {
         let dir = tempfile::tempdir().unwrap();
         let db = StateDb::open(&dir.path().join("s.db")).unwrap();
-        db.set_identity_many(&[("agent_id", "id-1"), ("agent_token", "tok-1")]).unwrap();
-        assert_eq!(db.get_identity("agent_id").unwrap().as_deref(), Some("id-1"));
-        assert_eq!(db.get_identity("agent_token").unwrap().as_deref(), Some("tok-1"));
+        db.set_identity_many(&[("agent_id", "id-1"), ("agent_token", "tok-1")])
+            .unwrap();
+        assert_eq!(
+            db.get_identity("agent_id").unwrap().as_deref(),
+            Some("id-1")
+        );
+        assert_eq!(
+            db.get_identity("agent_token").unwrap().as_deref(),
+            Some("tok-1")
+        );
     }
 }

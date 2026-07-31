@@ -67,7 +67,9 @@ pub fn watch_root(db: Arc<StateDb>, root: PathBuf, exclusions: Vec<String>, debo
                 buf.as_mut_ptr() as *mut _,
                 buf.len() as u32,
                 1, // recursive
-                FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_SECURITY,
+                FILE_NOTIFY_CHANGE_FILE_NAME
+                    | FILE_NOTIFY_CHANGE_LAST_WRITE
+                    | FILE_NOTIFY_CHANGE_SECURITY,
                 &mut returned,
                 std::ptr::null_mut(),
                 None,
@@ -77,25 +79,41 @@ pub fn watch_root(db: Arc<StateDb>, root: PathBuf, exclusions: Vec<String>, debo
             // ERROR_NOTIFY_ENUM_DIR (overflow) or handle failure. Overflow
             // must be a coverage gap, never a silent miss (spec 2.2).
             let err = std::io::Error::last_os_error();
-            let _ = db.record_gap("rdcw", "SENSOR_OVERFLOW", None, None, Some("NOTIFY_ENUM_DIR"), &format!("{{\"error\":\"{err}\"}}"));
+            let _ = db.record_gap(
+                "rdcw",
+                "SENSOR_OVERFLOW",
+                None,
+                None,
+                Some("NOTIFY_ENUM_DIR"),
+                &format!("{{\"error\":\"{err}\"}}"),
+            );
             let _ = db.increment_counter("SENSOR_OVERFLOW");
             std::thread::sleep(std::time::Duration::from_secs(1));
             continue;
         }
         let mut offset = 0usize;
         loop {
-            let info = unsafe { (buf.as_ptr().add(offset) as *const FILE_NOTIFY_INFORMATION).read_unaligned() };
+            let info = unsafe {
+                (buf.as_ptr().add(offset) as *const FILE_NOTIFY_INFORMATION).read_unaligned()
+            };
             let name_len = info.FileNameLength as usize / 2;
             let name = String::from_utf16_lossy(unsafe {
                 std::slice::from_raw_parts(info.FileName.as_ptr(), name_len)
             });
             let action = info.Action;
-            let action_name = ACTION_NAMES.iter().find(|(a, _)| *a == action).map(|(_, n)| *n).unwrap_or("unknown");
+            let action_name = ACTION_NAMES
+                .iter()
+                .find(|(a, _)| *a == action)
+                .map(|(_, n)| *n)
+                .unwrap_or("unknown");
             // Renames/creates/writes are priority-2 candidates (spec 10.8).
             let path = root.join(&name);
             let s = path.to_string_lossy();
-            if action != 0x2 /* removed: nothing to capture */ && !crate::config::matches_exclusion(&exclusions, &s) {
-                if let Err(e) = db.enqueue(&s, priority::WRITTEN_OR_RENAMED, action_name, debounce_ms) {
+            if action != 0x2 /* removed: nothing to capture */ && !crate::config::matches_exclusion(&exclusions, &s)
+            {
+                if let Err(e) =
+                    db.enqueue(&s, priority::WRITTEN_OR_RENAMED, action_name, debounce_ms)
+                {
                     tracing::warn!(error = %e, path = %s, "failed to enqueue RDCW candidate");
                 }
             }

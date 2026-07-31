@@ -31,7 +31,9 @@ pub fn file_key(md: &std::fs::Metadata) -> FileKey {
 #[cfg(windows)]
 pub fn key_for_file(file: &std::fs::File) -> std::io::Result<FileKey> {
     use std::os::windows::io::AsRawHandle;
-    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
     let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
     if ok == 0 {
@@ -68,7 +70,6 @@ pub fn file_key(md: &std::fs::Metadata) -> FileKey {
         ctime_ns: 0,
     }
 }
-
 
 /// Cheap identity for snapshot-diff scans (reconcile/poll). Unix: full
 /// (dev, inode, size, mtime). Elsewhere: (0, 0, size, mtime) — a rewrite

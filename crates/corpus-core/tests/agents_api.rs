@@ -39,8 +39,11 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
         .unwrap();
 
     // --- enrollment: one-time token exchange
-    let ca = corpus_core::mtls::load_or_create_ca(tempfile::tempdir().unwrap().path(), &[]).unwrap();
-    let tok = agents::create_enrollment_token(&pool, tenant, "itest", Some(3600)).await.unwrap();
+    let ca =
+        corpus_core::mtls::load_or_create_ca(tempfile::tempdir().unwrap().path(), &[]).unwrap();
+    let tok = agents::create_enrollment_token(&pool, tenant, "itest", Some(3600))
+        .await
+        .unwrap();
     let resp = agents::enroll(
         &pool,
         &ca,
@@ -68,7 +71,9 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     assert!(second.is_err(), "consumed token must not enroll twice");
 
     // --- bearer auth resolves identity
-    let ident = agents::authenticate(&pool, &resp.agent_token).await.unwrap();
+    let ident = agents::authenticate(&pool, &resp.agent_token)
+        .await
+        .unwrap();
     assert_eq!(ident.agent_id, resp.agent_id);
     assert_eq!(ident.host_name, "itest-host");
     assert!(agents::authenticate(&pool, "cpagent-bogus").await.is_err());
@@ -93,7 +98,9 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     )
     .await
     .unwrap();
-    let status = agents::agent_status(&pool, tenant, resp.agent_id).await.unwrap();
+    let status = agents::agent_status(&pool, tenant, resp.agent_id)
+        .await
+        .unwrap();
     assert_eq!(status.queue_depth, Some(3));
     assert_eq!(status.baseline_state.as_deref(), Some("complete"));
     assert_eq!(status.outcome_counts["TOO_LARGE"], 1);
@@ -115,7 +122,9 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     )
     .await
     .unwrap();
-    let gaps = agents::coverage_gaps(&pool, tenant, Some("TOO_LARGE"), 10).await.unwrap();
+    let gaps = agents::coverage_gaps(&pool, tenant, Some("TOO_LARGE"), 10)
+        .await
+        .unwrap();
     assert_eq!(gaps.len(), 1);
     assert_eq!(gaps[0].path.as_deref(), Some("/watch/big.bin"));
     assert_eq!(gaps[0].host_name, "itest-host");
@@ -127,33 +136,69 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     let cas_dir = tempfile::tempdir().unwrap();
     let cas = corpus_core::cas::FsCas::new(cas_dir.path()).unwrap();
 
-    let ann1 = ingest::announce(&pool, tenant, &AnnounceRequest {
-        sha256: sha.clone(),
-        size_bytes: bytes.len() as i64,
-        occurrence: Some(occ("itest-host", resp.agent_id, boot, 1, "/watch/a.bin", bytes.len() as i64)),
-    })
+    let ann1 = ingest::announce(
+        &pool,
+        tenant,
+        &AnnounceRequest {
+            sha256: sha.clone(),
+            size_bytes: bytes.len() as i64,
+            occurrence: Some(occ(
+                "itest-host",
+                resp.agent_id,
+                boot,
+                1,
+                "/watch/a.bin",
+                bytes.len() as i64,
+            )),
+        },
+    )
     .await
     .unwrap();
     assert_eq!(ann1.disposition, AnnounceDisposition::UploadRequired);
     let upload_id = ann1.upload_id.unwrap();
-    ingest::stage_upload(&pool, &cas, tenant, upload_id, bytes).await.unwrap();
-    ingest::finalize(&pool, &cas, tenant, &corpus_core::dto::FinalizeRequest {
-        upload_id,
-        sha256: sha.clone(),
-        size_bytes: bytes.len() as i64,
-        occurrence: Some(occ("itest-host", resp.agent_id, boot, 2, "/watch/a.bin", bytes.len() as i64)),
-        scope: None,
-        provenance: None,
-    })
+    ingest::stage_upload(&pool, &cas, tenant, upload_id, bytes)
+        .await
+        .unwrap();
+    ingest::finalize(
+        &pool,
+        &cas,
+        tenant,
+        &corpus_core::dto::FinalizeRequest {
+            upload_id,
+            sha256: sha.clone(),
+            size_bytes: bytes.len() as i64,
+            occurrence: Some(occ(
+                "itest-host",
+                resp.agent_id,
+                boot,
+                2,
+                "/watch/a.bin",
+                bytes.len() as i64,
+            )),
+            scope: None,
+            provenance: None,
+        },
+    )
     .await
     .unwrap();
 
     // Same bytes seen at another path: dedup hit, occurrence still recorded.
-    let ann2 = ingest::announce(&pool, tenant, &AnnounceRequest {
-        sha256: sha.clone(),
-        size_bytes: bytes.len() as i64,
-        occurrence: Some(occ("itest-host", resp.agent_id, boot, 3, "/watch/copy.bin", bytes.len() as i64)),
-    })
+    let ann2 = ingest::announce(
+        &pool,
+        tenant,
+        &AnnounceRequest {
+            sha256: sha.clone(),
+            size_bytes: bytes.len() as i64,
+            occurrence: Some(occ(
+                "itest-host",
+                resp.agent_id,
+                boot,
+                3,
+                "/watch/copy.bin",
+                bytes.len() as i64,
+            )),
+        },
+    )
     .await
     .unwrap();
     assert_eq!(ann2.disposition, AnnounceDisposition::AlreadyPresent);
@@ -168,7 +213,10 @@ async fn agent_enroll_heartbeat_gaps_and_dedup_occurrence() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(occ_count, 2, "finalize + dedup-hit announce each record one occurrence");
+    assert_eq!(
+        occ_count, 2,
+        "finalize + dedup-hit announce each record one occurrence"
+    );
     let paths: Vec<(String,)> = sqlx::query_as(
         "SELECT path FROM occurrence_event WHERE tenant_id = $1 AND agent_id = $2 ORDER BY agent_sequence",
     )

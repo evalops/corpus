@@ -13,7 +13,11 @@ pub const CONDITION_HUNT_MATCH: &str = "hunt_match";
 pub const CONDITION_MALICIOUS_VERDICT: &str = "malicious_verdict";
 pub const CONDITION_VARIANT_JOIN: &str = "variant_join";
 
-pub const CONDITIONS: [&str; 3] = [CONDITION_HUNT_MATCH, CONDITION_MALICIOUS_VERDICT, CONDITION_VARIANT_JOIN];
+pub const CONDITIONS: [&str; 3] = [
+    CONDITION_HUNT_MATCH,
+    CONDITION_MALICIOUS_VERDICT,
+    CONDITION_VARIANT_JOIN,
+];
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct TriggerRow {
@@ -73,7 +77,12 @@ pub async fn list_triggers(pool: &PgPool, tenant: Uuid) -> Result<Vec<TriggerRow
 }
 
 /// Queue an event for every enabled trigger of this tenant+condition.
-pub async fn fire(pool: &PgPool, tenant: Uuid, condition: &str, event: serde_json::Value) -> Result<usize> {
+pub async fn fire(
+    pool: &PgPool,
+    tenant: Uuid,
+    condition: &str,
+    event: serde_json::Value,
+) -> Result<usize> {
     let triggers: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM trigger_rule WHERE tenant_id = $1 AND condition = $2 AND enabled",
     )

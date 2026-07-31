@@ -64,7 +64,14 @@ pub fn stable_read(
 ) -> Result<StableReadResult, StableReadError> {
     let mut attempt = 0;
     loop {
-        match read_once(path, spool_dir, max_artifact_bytes, spool_free_bytes, mutation_hook, cipher) {
+        match read_once(
+            path,
+            spool_dir,
+            max_artifact_bytes,
+            spool_free_bytes,
+            mutation_hook,
+            cipher,
+        ) {
             Err(StableReadError::ChangedDuringRead) if attempt < retries => {
                 attempt += 1;
                 continue;
@@ -166,13 +173,20 @@ fn read_once(
         return Err(StableReadError::ChangedDuringRead);
     }
 
-    Ok(StableReadResult { sha256: hex::encode(hasher.finalize()), size: total, spool_path })
+    Ok(StableReadResult {
+        sha256: hex::encode(hasher.finalize()),
+        size: total,
+        spool_path,
+    })
 }
 
 #[cfg(unix)]
 fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
-    OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW).open(path)
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
 }
 
 #[cfg(windows)]
@@ -181,7 +195,10 @@ fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
     // follow it (spec 10.5 step 2).
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-    OpenOptions::new().read(true).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(path)
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -339,7 +356,16 @@ mod tests {
             Err(StableReadError::SpoolFull)
         ));
         assert_eq!(
-            stable_read(&dir.path().join("gone.bin"), spool.path(), 1 << 20, 1 << 20, 3, None, None).unwrap_err(),
+            stable_read(
+                &dir.path().join("gone.bin"),
+                spool.path(),
+                1 << 20,
+                1 << 20,
+                3,
+                None,
+                None
+            )
+            .unwrap_err(),
             StableReadError::DeletedBeforeRead
         );
     }

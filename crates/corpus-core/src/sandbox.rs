@@ -175,7 +175,10 @@ fn apply_landlock(sample_dir: &Path) -> std::io::Result<()> {
         .set_compatibility(CompatLevel::BestEffort)
         .create()
         .map_err(|e| std::io::Error::other(e.to_string()))?
-        .add_rules(landlock::path_beneath_rules(paths, AccessFs::from_read(abi)))
+        .add_rules(landlock::path_beneath_rules(
+            paths,
+            AccessFs::from_read(abi),
+        ))
         .map_err(|e| std::io::Error::other(e.to_string()))?
         .restrict_self()
         .map_err(|e| std::io::Error::other(e.to_string()))?;
@@ -232,13 +235,20 @@ fn outcome_from_json(v: &serde_json::Value) -> ScanOutcome {
     let matches = v
         .get("matches")
         .and_then(|m| m.as_array())
-        .map(|arr| arr.iter().filter_map(|m| serde_json::from_value(m.clone()).ok()).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|m| serde_json::from_value(m.clone()).ok())
+                .collect()
+        })
         .unwrap_or_default();
     ScanOutcome {
         status,
         matches,
         duration_ms: v.get("duration_ms").and_then(|d| d.as_i64()).unwrap_or(0),
-        error_code: v.get("error_code").and_then(|e| e.as_str()).map(|s| s.to_string()),
+        error_code: v
+            .get("error_code")
+            .and_then(|e| e.as_str())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -246,7 +256,8 @@ fn outcome_from_json(v: &serde_json::Value) -> ScanOutcome {
 mod tests {
     use super::*;
 
-    const RULE: &str = r#"rule SandboxMarker { strings: $m = "CORPUS_SANDBOX_MARKER" condition: $m }"#;
+    const RULE: &str =
+        r#"rule SandboxMarker { strings: $m = "CORPUS_SANDBOX_MARKER" condition: $m }"#;
 
     #[tokio::test]
     async fn subprocess_scan_matches_and_isolated_run() {
@@ -266,7 +277,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(outcome["status"], "matched", "subprocess scan must match: {outcome}");
+        assert_eq!(
+            outcome["status"], "matched",
+            "subprocess scan must match: {outcome}"
+        );
     }
 
     #[tokio::test]
@@ -284,9 +298,15 @@ mod tests {
             "sample_path": sample,
             "sleep_ms": 10000,
         });
-        let outcome = run_sandboxed(&scanner, &sample, &job.to_string(), Duration::from_millis(500), 1024 * 1024)
-            .await
-            .unwrap();
+        let outcome = run_sandboxed(
+            &scanner,
+            &sample,
+            &job.to_string(),
+            Duration::from_millis(500),
+            1024 * 1024,
+        )
+        .await
+        .unwrap();
         assert_eq!(outcome["status"], "timeout");
     }
 }

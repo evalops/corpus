@@ -45,7 +45,10 @@ mod tests {
         let wrong_hint = sha256_hex(b"attacker-claimed bytes");
         let err = verify_upload(bytes, &wrong_hint).unwrap_err();
         match err {
-            crate::error::Error::HashMismatch { announced, recomputed } => {
+            crate::error::Error::HashMismatch {
+                announced,
+                recomputed,
+            } => {
                 assert_eq!(announced, wrong_hint);
                 assert_eq!(recomputed, sha256_hex(bytes));
             }

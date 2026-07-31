@@ -12,7 +12,11 @@ use uuid::Uuid;
 #[command(name = "corpusctl", about = "Corpus platform CLI (Milestone 0)")]
 struct Cli {
     /// Server base URL.
-    #[arg(long, env = "CORPUS_SERVER_URL", default_value = "http://127.0.0.1:8080")]
+    #[arg(
+        long,
+        env = "CORPUS_SERVER_URL",
+        default_value = "http://127.0.0.1:8080"
+    )]
     server: String,
 
     /// Tenant UUID or slug. Defaults server-side to the seeded `default` tenant
@@ -189,7 +193,9 @@ enum TriggersCmd {
     },
     List,
     /// Queue a signed test event for one trigger.
-    Test { trigger_id: Uuid },
+    Test {
+        trigger_id: Uuid,
+    },
 }
 
 #[derive(Subcommand)]
@@ -289,7 +295,9 @@ enum TenantsCmd {
 #[derive(Subcommand)]
 enum RulesCmd {
     /// Validate-compile and register a single-rule .yar file.
-    Add { file: String },
+    Add {
+        file: String,
+    },
     List,
 }
 
@@ -316,8 +324,12 @@ enum HuntsCmd {
         bundle: String,
     },
     /// Execute a hunt on the server (single-node, synchronous).
-    Run { hunt_id: Uuid },
-    Status { hunt_id: Uuid },
+    Run {
+        hunt_id: Uuid,
+    },
+    Status {
+        hunt_id: Uuid,
+    },
     List,
 }
 
@@ -392,18 +404,25 @@ async fn commit_bytes(
 ) -> Result<(String, String)> {
     let sha = hash::sha256_hex(bytes);
     let ann: AnnounceResponse = client
-        .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/announce").json(&AnnounceRequest {
-            sha256: sha.clone(),
-            size_bytes: bytes.len() as i64,
-            occurrence: occ.clone(),
-        }))
+        .send(
+            client
+                .req(reqwest::Method::POST, "/api/v1/artifacts/announce")
+                .json(&AnnounceRequest {
+                    sha256: sha.clone(),
+                    size_bytes: bytes.len() as i64,
+                    occurrence: occ.clone(),
+                }),
+        )
         .await?;
     match ann.disposition {
         AnnounceDisposition::AlreadyPresent => Ok((sha, "already_present".into())),
         AnnounceDisposition::UploadRequired => {
             let upload_id = ann.upload_id.context("no upload_id in response")?;
             let up = client
-                .req(reqwest::Method::PUT, &format!("/api/v1/artifacts/uploads/{upload_id}"))
+                .req(
+                    reqwest::Method::PUT,
+                    &format!("/api/v1/artifacts/uploads/{upload_id}"),
+                )
                 .body(bytes.to_vec())
                 .send()
                 .await?;
@@ -413,14 +432,18 @@ async fn commit_bytes(
                 bail!("upload failed: {s}: {body}");
             }
             let _fin: FinalizeResponse = client
-                .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/finalize").json(&FinalizeRequest {
-                    upload_id,
-                    sha256: sha.clone(),
-                    size_bytes: bytes.len() as i64,
-                    occurrence: occ,
-                    scope: scope.map(|s| s.to_string()),
-                    provenance,
-                }))
+                .send(
+                    client
+                        .req(reqwest::Method::POST, "/api/v1/artifacts/finalize")
+                        .json(&FinalizeRequest {
+                            upload_id,
+                            sha256: sha.clone(),
+                            size_bytes: bytes.len() as i64,
+                            occurrence: occ,
+                            scope: scope.map(|s| s.to_string()),
+                            provenance,
+                        }),
+                )
                 .await?;
             Ok((sha, "captured".into()))
         }
@@ -428,7 +451,14 @@ async fn commit_bytes(
     }
 }
 
-async fn report_gap(client: &Client, host: &str, reason: &str, outcome: &str, path: &str, detail: serde_json::Value) -> Result<()> {
+async fn report_gap(
+    client: &Client,
+    host: &str,
+    reason: &str,
+    outcome: &str,
+    path: &str,
+    detail: serde_json::Value,
+) -> Result<()> {
     client
         .req(reqwest::Method::POST, "/api/v1/agents/gaps")
         .json(&vec![GapEvent {
@@ -481,7 +511,10 @@ async fn cmd_import_oci(
         }
         (Some(image_ref), None) => {
             let iref = corpus_core::oci::parse_image_ref(&image_ref)?;
-            let creds = match (std::env::var("CORPUS_OCI_USERNAME"), std::env::var("CORPUS_OCI_PASSWORD")) {
+            let creds = match (
+                std::env::var("CORPUS_OCI_USERNAME"),
+                std::env::var("CORPUS_OCI_PASSWORD"),
+            ) {
                 (Ok(u), Ok(p)) => Some((u, p)),
                 _ => None,
             };
@@ -524,7 +557,10 @@ async fn cmd_import_oci(
                         serde_json::json!({"size_bytes": f.size, "layer_digest": layer_digest}),
                     )
                     .await?;
-                    println!("TOO_LARGE {} ({} bytes) layer {}", path, f.size, layer_digest);
+                    println!(
+                        "TOO_LARGE {} ({} bytes) layer {}",
+                        path, f.size, layer_digest
+                    );
                     continue;
                 };
                 // Code-bearing artifacts only (spec 2.3): executables,
@@ -545,8 +581,10 @@ async fn cmd_import_oci(
                     file_mtime: None,
                     capture_reason: "oci_image".into(),
                 };
-                let prov = corpus_core::oci::file_provenance(label, image_digest, layer_digest, &path);
-                let (sha, outcome) = commit_bytes(client, bytes, Some(occ), None, Some(prov)).await?;
+                let prov =
+                    corpus_core::oci::file_provenance(label, image_digest, layer_digest, &path);
+                let (sha, outcome) =
+                    commit_bytes(client, bytes, Some(occ), None, Some(prov)).await?;
                 if outcome == "captured" {
                     captured += 1;
                 } else {
@@ -569,11 +607,15 @@ struct ImportOptions {
 }
 
 async fn cmd_import(client: &Client, dir: &str, capture_reason: &str) -> Result<()> {
-    import_dir(client, dir, &ImportOptions {
-        capture_reason: capture_reason.to_string(),
-        host: None,
-        observed_at: None,
-    })
+    import_dir(
+        client,
+        dir,
+        &ImportOptions {
+            capture_reason: capture_reason.to_string(),
+            host: None,
+            observed_at: None,
+        },
+    )
     .await
 }
 
@@ -625,11 +667,15 @@ async fn import_dir(client: &Client, dir: &str, opts: &ImportOptions) -> Result<
         };
 
         let announce: AnnounceResponse = client
-            .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/announce").json(&AnnounceRequest {
-                sha256: sha.clone(),
-                size_bytes: bytes.len() as i64,
-                occurrence: Some(occ.clone()),
-            }))
+            .send(
+                client
+                    .req(reqwest::Method::POST, "/api/v1/artifacts/announce")
+                    .json(&AnnounceRequest {
+                        sha256: sha.clone(),
+                        size_bytes: bytes.len() as i64,
+                        occurrence: Some(occ.clone()),
+                    }),
+            )
             .await?;
 
         match announce.disposition {
@@ -655,14 +701,18 @@ async fn import_dir(client: &Client, dir: &str, opts: &ImportOptions) -> Result<
                     continue;
                 }
                 let fin: FinalizeResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/artifacts/finalize").json(&FinalizeRequest {
-                        upload_id,
-                        sha256: sha.clone(),
-                        size_bytes: bytes.len() as i64,
-                        occurrence: Some(occ),
-                        scope: None,
-                        provenance: None,
-                    }))
+                    .send(
+                        client
+                            .req(reqwest::Method::POST, "/api/v1/artifacts/finalize")
+                            .json(&FinalizeRequest {
+                                upload_id,
+                                sha256: sha.clone(),
+                                size_bytes: bytes.len() as i64,
+                                occurrence: Some(occ),
+                                scope: None,
+                                provenance: None,
+                            }),
+                    )
                     .await?;
                 let fwd = if fin.forward_matches.is_empty() {
                     String::new()
@@ -677,12 +727,16 @@ async fn import_dir(client: &Client, dir: &str, opts: &ImportOptions) -> Result<
             }
         }
     }
-    println!("import complete: {captured} captured, {already_present} already present, {failed} failed");
+    println!(
+        "import complete: {captured} captured, {already_present} already present, {failed} failed"
+    );
     Ok(())
 }
 
 async fn resolve_rule_ids(client: &Client, specs: &[String]) -> Result<Vec<Uuid>> {
-    let rules: Vec<RuleResponse> = client.send(client.req(reqwest::Method::GET, "/api/v1/rules")).await?;
+    let rules: Vec<RuleResponse> = client
+        .send(client.req(reqwest::Method::GET, "/api/v1/rules"))
+        .await?;
     specs
         .iter()
         .map(|spec| {
@@ -725,12 +779,16 @@ async fn main() -> Result<()> {
                             .json(&TenantCreateRequest { slug, name }),
                     )
                     .await?;
-                println!("tenant_id: {} slug: {} name: {} status: {}", t.id, t.slug, t.name, t.status);
+                println!(
+                    "tenant_id: {} slug: {} name: {} status: {}",
+                    t.id, t.slug, t.name, t.status
+                );
             }
             TenantsCmd::List => {
                 let bare = Client::new(client.base.clone(), None);
-                let tenants: Vec<TenantResponse> =
-                    bare.send(bare.req(reqwest::Method::GET, "/api/v1/tenants")).await?;
+                let tenants: Vec<TenantResponse> = bare
+                    .send(bare.req(reqwest::Method::GET, "/api/v1/tenants"))
+                    .await?;
                 for t in tenants {
                     println!("{} {} {} {}", t.id, t.slug, t.status, t.name);
                 }
@@ -738,15 +796,25 @@ async fn main() -> Result<()> {
             TenantsCmd::Get { id_or_slug } => {
                 let bare = Client::new(client.base.clone(), None);
                 let t: TenantResponse = bare
-                    .send(bare.req(reqwest::Method::GET, &format!("/api/v1/tenants/{id_or_slug}")))
+                    .send(bare.req(
+                        reqwest::Method::GET,
+                        &format!("/api/v1/tenants/{id_or_slug}"),
+                    ))
                     .await?;
                 println!("{} {} {} {}", t.id, t.slug, t.status, t.name);
             }
         },
 
-        Cmd::Import { dir, capture_reason } => cmd_import(&client, &dir, &capture_reason).await?,
+        Cmd::Import {
+            dir,
+            capture_reason,
+        } => cmd_import(&client, &dir, &capture_reason).await?,
 
-        Cmd::ImportOci { image_ref, from_tar, max_artifact_bytes } => {
+        Cmd::ImportOci {
+            image_ref,
+            from_tar,
+            max_artifact_bytes,
+        } => {
             cmd_import_oci(&client, image_ref, from_tar, max_artifact_bytes).await?;
         }
 
@@ -771,24 +839,37 @@ async fn main() -> Result<()> {
                 }
                 println!("malwarebazaar import complete: {imported} files, scope=intel, no host occurrences");
             }
-            IntelCmd::Taxii { url, collection, auto_hunt } => {
+            IntelCmd::Taxii {
+                url,
+                collection,
+                auto_hunt,
+            } => {
                 let api_key = std::env::var("CORPUS_TAXII_API_KEY").ok();
-                let bundle = corpus_core::intel::fetch_taxii_indicators(&url, &collection, api_key.as_deref()).await?;
+                let bundle = corpus_core::intel::fetch_taxii_indicators(
+                    &url,
+                    &collection,
+                    api_key.as_deref(),
+                )
+                .await?;
                 let iocs = corpus_core::intel::extract_hash_iocs(&bundle);
                 println!("{} hash indicators extracted", iocs.len());
                 let source = format!("taxii:{url}/{collection}");
                 let resp: IndicatorsUpsertResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/intel/indicators").json(&IndicatorsUpsertRequest {
-                        source: source.clone(),
-                        indicators: iocs
-                            .iter()
-                            .map(|i| IndicatorInput {
-                                ioc_type: i.ioc_type.clone(),
-                                value: i.value.clone(),
-                                raw: Some(i.raw.clone()),
-                            })
-                            .collect(),
-                    }))
+                    .send(
+                        client
+                            .req(reqwest::Method::POST, "/api/v1/intel/indicators")
+                            .json(&IndicatorsUpsertRequest {
+                                source: source.clone(),
+                                indicators: iocs
+                                    .iter()
+                                    .map(|i| IndicatorInput {
+                                        ioc_type: i.ioc_type.clone(),
+                                        value: i.value.clone(),
+                                        raw: Some(i.raw.clone()),
+                                    })
+                                    .collect(),
+                            }),
+                    )
                     .await?;
                 println!("upserted {} indicators (source {source})", resp.upserted);
                 if auto_hunt {
@@ -798,71 +879,105 @@ async fn main() -> Result<()> {
                         .map(|i| i.value.clone())
                         .collect();
                     let hunt: HashHuntResponse = client
-                        .send(client.req(reqwest::Method::POST, "/api/v1/intel/hash-hunt").json(&HashHuntRequest {
-                            hashes: hashes.clone(),
-                        }))
+                        .send(
+                            client
+                                .req(reqwest::Method::POST, "/api/v1/intel/hash-hunt")
+                                .json(&HashHuntRequest {
+                                    hashes: hashes.clone(),
+                                }),
+                        )
                         .await?;
-                    println!("hash hunt over endpoint-scope artifacts: {} hashes queried, {} hits", hashes.len(), hunt.hits.len());
+                    println!(
+                        "hash hunt over endpoint-scope artifacts: {} hashes queried, {} hits",
+                        hashes.len(),
+                        hunt.hits.len()
+                    );
                     for hit in hunt.hits {
-                        println!("HIT {} artifact {} committed {}", hit.value, hit.artifact_id, hit.first_committed_at);
+                        println!(
+                            "HIT {} artifact {} committed {}",
+                            hit.value, hit.artifact_id, hit.first_committed_at
+                        );
                     }
                 }
             }
         },
 
-        Cmd::Backfill { root, observed_at, host, snapshot_times_file } => {
-            match (root, observed_at, snapshot_times_file) {
-                (Some(root), Some(ts), None) => {
-                    println!("backfilling {root} as of {ts} (host {host})");
-                    import_dir(&client, &root, &ImportOptions {
+        Cmd::Backfill {
+            root,
+            observed_at,
+            host,
+            snapshot_times_file,
+        } => match (root, observed_at, snapshot_times_file) {
+            (Some(root), Some(ts), None) => {
+                println!("backfilling {root} as of {ts} (host {host})");
+                import_dir(
+                    &client,
+                    &root,
+                    &ImportOptions {
                         capture_reason: "historical_backfill".into(),
                         host: Some(host),
                         observed_at: Some(ts),
-                    })
-                    .await?;
-                }
-                (None, None, Some(file)) => {
-                    let text = std::fs::read_to_string(&file)
-                        .with_context(|| format!("reading {file}"))?;
-                    let mut entries: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
-                    for (lineno, line) in text.lines().enumerate() {
-                        let line = line.trim();
-                        if line.is_empty() || line.starts_with('#') {
-                            continue;
-                        }
-                        let (dir, ts) = line.rsplit_once(char::is_whitespace)
-                            .with_context(|| format!("line {}: expected '<dir> <rfc3339>'", lineno + 1))?;
-                        let ts = chrono::DateTime::parse_from_rfc3339(ts)
-                            .with_context(|| format!("line {}: bad rfc3339 {ts:?}", lineno + 1))?
-                            .with_timezone(&chrono::Utc);
-                        entries.push((ts, dir.trim().to_string()));
+                    },
+                )
+                .await?;
+            }
+            (None, None, Some(file)) => {
+                let text =
+                    std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?;
+                let mut entries: Vec<(chrono::DateTime<chrono::Utc>, String)> = Vec::new();
+                for (lineno, line) in text.lines().enumerate() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
                     }
-                    entries.sort_by_key(|(ts, _)| *ts);
-                    for (ts, dir) in entries {
-                        println!("backfilling {dir} as of {ts} (host {host})");
-                        import_dir(&client, &dir, &ImportOptions {
+                    let (dir, ts) = line.rsplit_once(char::is_whitespace).with_context(|| {
+                        format!("line {}: expected '<dir> <rfc3339>'", lineno + 1)
+                    })?;
+                    let ts = chrono::DateTime::parse_from_rfc3339(ts)
+                        .with_context(|| format!("line {}: bad rfc3339 {ts:?}", lineno + 1))?
+                        .with_timezone(&chrono::Utc);
+                    entries.push((ts, dir.trim().to_string()));
+                }
+                entries.sort_by_key(|(ts, _)| *ts);
+                for (ts, dir) in entries {
+                    println!("backfilling {dir} as of {ts} (host {host})");
+                    import_dir(
+                        &client,
+                        &dir,
+                        &ImportOptions {
                             capture_reason: "historical_backfill".into(),
                             host: Some(host.clone()),
                             observed_at: Some(ts),
-                        })
-                        .await?;
-                    }
+                        },
+                    )
+                    .await?;
                 }
-                _ => bail!("use either --root <dir> --observed-at <ts> or --snapshot-times-file <file>"),
             }
-        }
+            _ => {
+                bail!("use either --root <dir> --observed-at <ts> or --snapshot-times-file <file>")
+            }
+        },
 
         Cmd::Rules { cmd } => match cmd {
             RulesCmd::Add { file } => {
-                let source = std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?;
+                let source =
+                    std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?;
                 let rule: RuleResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/rules").json(&RuleCreateRequest { source }))
+                    .send(
+                        client
+                            .req(reqwest::Method::POST, "/api/v1/rules")
+                            .json(&RuleCreateRequest { source }),
+                    )
                     .await?;
-                println!("rule_id: {} stable_id: {} state: {}", rule.id, rule.stable_id, rule.state);
+                println!(
+                    "rule_id: {} stable_id: {} state: {}",
+                    rule.id, rule.stable_id, rule.state
+                );
             }
             RulesCmd::List => {
-                let rules: Vec<RuleResponse> =
-                    client.send(client.req(reqwest::Method::GET, "/api/v1/rules")).await?;
+                let rules: Vec<RuleResponse> = client
+                    .send(client.req(reqwest::Method::GET, "/api/v1/rules"))
+                    .await?;
                 for r in rules {
                     println!("{} {} {} {}", r.id, r.namespace, r.stable_id, r.state);
                 }
@@ -873,10 +988,11 @@ async fn main() -> Result<()> {
             BundlesCmd::Publish { rules, activate } => {
                 let rule_ids = resolve_rule_ids(&client, &rules).await?;
                 let bundle: BundleResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/bundles").json(&BundlePublishRequest {
-                        rule_ids,
-                        activate,
-                    }))
+                    .send(
+                        client
+                            .req(reqwest::Method::POST, "/api/v1/bundles")
+                            .json(&BundlePublishRequest { rule_ids, activate }),
+                    )
                     .await?;
                 println!(
                     "bundle_digest: {} rules: {} active: {} engine: {}",
@@ -884,10 +1000,14 @@ async fn main() -> Result<()> {
                 );
             }
             BundlesCmd::List => {
-                let bundles: Vec<BundleResponse> =
-                    client.send(client.req(reqwest::Method::GET, "/api/v1/bundles")).await?;
+                let bundles: Vec<BundleResponse> = client
+                    .send(client.req(reqwest::Method::GET, "/api/v1/bundles"))
+                    .await?;
                 for b in bundles {
-                    println!("{} rules={} active={} scope={}", b.digest, b.rule_count, b.active, b.scope);
+                    println!(
+                        "{} rules={} active={} scope={}",
+                        b.digest, b.rule_count, b.active, b.scope
+                    );
                 }
             }
         },
@@ -895,26 +1015,33 @@ async fn main() -> Result<()> {
         Cmd::Hunts { cmd } => match cmd {
             HuntsCmd::Create { bundle } => {
                 let hunt: HuntResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/hunts").json(&HuntCreateRequest {
-                        bundle_digest: bundle,
-                    }))
+                    .send(client.req(reqwest::Method::POST, "/api/v1/hunts").json(
+                        &HuntCreateRequest {
+                            bundle_digest: bundle,
+                        },
+                    ))
                     .await?;
                 println!("hunt_id: {} state: {}", hunt.id, hunt.state);
             }
             HuntsCmd::Run { hunt_id } => {
                 let hunt: HuntResponse = client
-                    .send(client.req(reqwest::Method::POST, &format!("/api/v1/hunts/{hunt_id}/run")))
+                    .send(client.req(
+                        reqwest::Method::POST,
+                        &format!("/api/v1/hunts/{hunt_id}/run"),
+                    ))
                     .await?;
                 print_hunt(&hunt);
             }
             HuntsCmd::Status { hunt_id } => {
-                let hunt: HuntResponse =
-                    client.send(client.req(reqwest::Method::GET, &format!("/api/v1/hunts/{hunt_id}"))).await?;
+                let hunt: HuntResponse = client
+                    .send(client.req(reqwest::Method::GET, &format!("/api/v1/hunts/{hunt_id}")))
+                    .await?;
                 print_hunt(&hunt);
             }
             HuntsCmd::List => {
-                let hunts: Vec<HuntResponse> =
-                    client.send(client.req(reqwest::Method::GET, "/api/v1/hunts")).await?;
+                let hunts: Vec<HuntResponse> = client
+                    .send(client.req(reqwest::Method::GET, "/api/v1/hunts"))
+                    .await?;
                 for h in hunts {
                     println!(
                         "{} {} {} bundle={} watermark={:?} matched={}",
@@ -925,7 +1052,11 @@ async fn main() -> Result<()> {
         },
 
         Cmd::Report { cmd } => match cmd {
-            ReportCmd::BlastRadius { hunt, sha256, expand_variants } => {
+            ReportCmd::BlastRadius {
+                hunt,
+                sha256,
+                expand_variants,
+            } => {
                 let path = match (hunt, &sha256) {
                     (Some(id), None) => {
                         format!("/api/v1/reports/blast-radius?hunt_id={id}&expand_variants={expand_variants}")
@@ -949,14 +1080,20 @@ async fn main() -> Result<()> {
 
         Cmd::Similar { sha256 } => {
             let resp: SimilarResponse = client
-                .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/similar")))
+                .send(client.req(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/artifacts/{sha256}/similar"),
+                ))
                 .await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
 
         Cmd::Variants { sha256 } => {
             let resp: VariantsResponse = client
-                .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/variants")))
+                .send(client.req(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/artifacts/{sha256}/variants"),
+                ))
                 .await?;
             println!("{}", serde_json::to_string_pretty(&resp)?);
         }
@@ -972,12 +1109,20 @@ async fn main() -> Result<()> {
 
         Cmd::Prevalence { sha256 } => {
             let p: serde_json::Value = client
-                .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/prevalence")))
+                .send(client.req(
+                    reqwest::Method::GET,
+                    &format!("/api/v1/artifacts/{sha256}/prevalence"),
+                ))
                 .await?;
             println!("{}", serde_json::to_string_pretty(&p)?);
         }
 
-        Cmd::Search { max_hosts, since, opinion, limit } => {
+        Cmd::Search {
+            max_hosts,
+            since,
+            opinion,
+            limit,
+        } => {
             let mut path = format!("/api/v1/search?max_hosts={max_hosts}&limit={limit}");
             if let Some(s) = &since {
                 path.push_str(&format!("&since={s}"));
@@ -985,56 +1130,91 @@ async fn main() -> Result<()> {
             if let Some(o) = &opinion {
                 path.push_str(&format!("&opinion={o}"));
             }
-            let hits: serde_json::Value = client.send(client.req(reqwest::Method::GET, &path)).await?;
+            let hits: serde_json::Value =
+                client.send(client.req(reqwest::Method::GET, &path)).await?;
             println!("{}", serde_json::to_string_pretty(&hits)?);
         }
 
         Cmd::Opinion { cmd } => match cmd {
-            OpinionCmd::Set { sha256, level, reason, actor } => {
+            OpinionCmd::Set {
+                sha256,
+                level,
+                reason,
+                actor,
+            } => {
                 let o: serde_json::Value = client
-                    .send(client.req(reqwest::Method::POST, &format!("/api/v1/artifacts/{sha256}/opinion")).json(
-                        &OpinionSetRequest { opinion: level, reason, actor },
-                    ))
+                    .send(
+                        client
+                            .req(
+                                reqwest::Method::POST,
+                                &format!("/api/v1/artifacts/{sha256}/opinion"),
+                            )
+                            .json(&OpinionSetRequest {
+                                opinion: level,
+                                reason,
+                                actor,
+                            }),
+                    )
                     .await?;
                 println!("{}", serde_json::to_string_pretty(&o)?);
             }
             OpinionCmd::Get { sha256 } => {
                 let o: serde_json::Value = client
-                    .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/opinion")))
+                    .send(client.req(
+                        reqwest::Method::GET,
+                        &format!("/api/v1/artifacts/{sha256}/opinion"),
+                    ))
                     .await?;
                 println!("{}", serde_json::to_string_pretty(&o)?);
             }
             OpinionCmd::History { sha256 } => {
                 let o: serde_json::Value = client
-                    .send(client.req(reqwest::Method::GET, &format!("/api/v1/artifacts/{sha256}/opinion/history")))
+                    .send(client.req(
+                        reqwest::Method::GET,
+                        &format!("/api/v1/artifacts/{sha256}/opinion/history"),
+                    ))
                     .await?;
                 println!("{}", serde_json::to_string_pretty(&o)?);
             }
         },
 
         Cmd::Triggers { cmd } => match cmd {
-            TriggersCmd::Create { name, condition, webhook_url, secret } => {
+            TriggersCmd::Create {
+                name,
+                condition,
+                webhook_url,
+                secret,
+            } => {
                 let resp: TriggerCreateResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/triggers").json(&TriggerCreateRequest {
-                        name,
-                        condition,
-                        webhook_url,
-                        secret,
-                    }))
+                    .send(client.req(reqwest::Method::POST, "/api/v1/triggers").json(
+                        &TriggerCreateRequest {
+                            name,
+                            condition,
+                            webhook_url,
+                            secret,
+                        },
+                    ))
                     .await?;
-                println!("trigger_id: {} condition: {}", resp.trigger.id, resp.trigger.condition);
+                println!(
+                    "trigger_id: {} condition: {}",
+                    resp.trigger.id, resp.trigger.condition
+                );
                 println!("hmac_secret: {}", resp.hmac_secret);
             }
             TriggersCmd::List => {
-                let rows: Vec<TriggerView> =
-                    client.send(client.req(reqwest::Method::GET, "/api/v1/triggers")).await?;
+                let rows: Vec<TriggerView> = client
+                    .send(client.req(reqwest::Method::GET, "/api/v1/triggers"))
+                    .await?;
                 for r in rows {
                     println!("{} {} {} enabled={}", r.id, r.name, r.condition, r.enabled);
                 }
             }
             TriggersCmd::Test { trigger_id } => {
                 client
-                    .req(reqwest::Method::POST, &format!("/api/v1/triggers/{trigger_id}/test"))
+                    .req(
+                        reqwest::Method::POST,
+                        &format!("/api/v1/triggers/{trigger_id}/test"),
+                    )
                     .send()
                     .await?;
                 println!("test event queued for {trigger_id}");
@@ -1042,13 +1222,21 @@ async fn main() -> Result<()> {
         },
 
         Cmd::Hunt { cmd } => match cmd {
-            HuntCmd::Droppers { sha256, max_hosts, window_hours } => {
+            HuntCmd::Droppers {
+                sha256,
+                max_hosts,
+                window_hours,
+            } => {
                 let resp: serde_json::Value = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/hunts/droppers").json(&serde_json::json!({
-                        "sha256": sha256,
-                        "max_hosts": max_hosts,
-                        "window_hours": window_hours,
-                    })))
+                    .send(
+                        client
+                            .req(reqwest::Method::POST, "/api/v1/hunts/droppers")
+                            .json(&serde_json::json!({
+                                "sha256": sha256,
+                                "max_hosts": max_hosts,
+                                "window_hours": window_hours,
+                            })),
+                    )
                     .await?;
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
@@ -1068,9 +1256,14 @@ async fn main() -> Result<()> {
         Cmd::EnrollToken { cmd } => match cmd {
             EnrollTokenCmd::Create { label, ttl_secs } => {
                 let tok: EnrollmentTokenResponse = client
-                    .send(client.req(reqwest::Method::POST, "/api/v1/enrollment-tokens").json(
-                        &EnrollmentTokenCreateRequest { label: Some(label), ttl_secs },
-                    ))
+                    .send(
+                        client
+                            .req(reqwest::Method::POST, "/api/v1/enrollment-tokens")
+                            .json(&EnrollmentTokenCreateRequest {
+                                label: Some(label),
+                                ttl_secs,
+                            }),
+                    )
                     .await?;
                 println!("enrollment_token: {}", tok.token);
                 if let Some(exp) = tok.expires_at {
@@ -1081,8 +1274,9 @@ async fn main() -> Result<()> {
 
         Cmd::Agents { cmd } => match cmd {
             AgentsCmd::List => {
-                let agents: Vec<AgentStatusResponse> =
-                    client.send(client.req(reqwest::Method::GET, "/api/v1/agents")).await?;
+                let agents: Vec<AgentStatusResponse> = client
+                    .send(client.req(reqwest::Method::GET, "/api/v1/agents"))
+                    .await?;
                 for a in agents {
                     let hb = a
                         .last_heartbeat_at

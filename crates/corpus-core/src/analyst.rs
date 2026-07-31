@@ -142,7 +142,9 @@ pub async fn dropper_candidates(
             .bind(&raw)
             .fetch_optional(pool)
             .await?;
-    let Some((seed_id,)) = seed else { return Ok(vec![]) };
+    let Some((seed_id,)) = seed else {
+        return Ok(vec![]);
+    };
 
     // Seed set: the artifact plus its variant group members.
     let mut seed_ids = vec![seed_id];
@@ -212,13 +214,17 @@ pub fn parse_since(s: &str) -> Result<DateTime<Utc>> {
         return Ok(t.with_timezone(&Utc));
     }
     let (num, unit) = s.split_at(s.len().saturating_sub(1));
-    let n: i64 = num.parse().map_err(|_| Error::BadRequest(format!("invalid --since {s:?}")))?;
+    let n: i64 = num
+        .parse()
+        .map_err(|_| Error::BadRequest(format!("invalid --since {s:?}")))?;
     let now = Utc::now();
     match unit {
         "d" => Ok(now - chrono::Duration::days(n)),
         "h" => Ok(now - chrono::Duration::hours(n)),
         "m" => Ok(now - chrono::Duration::minutes(n)),
-        _ => Err(Error::BadRequest(format!("invalid --since {s:?} (use RFC3339 or 7d/24h/30m)"))),
+        _ => Err(Error::BadRequest(format!(
+            "invalid --since {s:?} (use RFC3339 or 7d/24h/30m)"
+        ))),
     }
 }
 

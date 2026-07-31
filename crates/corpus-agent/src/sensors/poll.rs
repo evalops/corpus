@@ -16,11 +16,18 @@ pub async fn run(db: Arc<StateDb>, cfg: Arc<Config>) {
         let db2 = db.clone();
         let cfg2 = cfg.clone();
         let result = tokio::task::spawn_blocking(move || {
-            reconcile_scan(&db2, &cfg2.watch.paths, &cfg2.watch.exclusions, cfg2.watch.debounce_ms)
+            reconcile_scan(
+                &db2,
+                &cfg2.watch.paths,
+                &cfg2.watch.exclusions,
+                cfg2.watch.debounce_ms,
+            )
         })
         .await;
         match result {
-            Ok(Ok(n)) if n > 0 => tracing::info!(candidates = n, "reconcile scan enqueued candidates"),
+            Ok(Ok(n)) if n > 0 => {
+                tracing::info!(candidates = n, "reconcile scan enqueued candidates")
+            }
             Ok(Err(e)) => tracing::warn!(error = %e, "reconcile scan failed"),
             Err(e) => tracing::warn!(error = %e, "reconcile scan join error"),
             _ => {}

@@ -44,7 +44,11 @@ impl IntoResponse for AppError {
             Error::RuleCompile(_) | Error::HashMismatch { .. } => StatusCode::UNPROCESSABLE_ENTITY,
             Error::Db(_) | Error::Io(_) | Error::Migrate(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        (status, Json(serde_json::json!({"error": self.0.to_string()}))).into_response()
+        (
+            status,
+            Json(serde_json::json!({"error": self.0.to_string()})),
+        )
+            .into_response()
     }
 }
 
@@ -70,7 +74,10 @@ async fn create_tenant(
     State(st): State<AppState>,
     Json(req): Json<TenantCreateRequest>,
 ) -> Result<(StatusCode, Json<TenantResponse>), AppError> {
-    Ok((StatusCode::CREATED, Json(tenant::create_tenant(&st.pool, &req).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(tenant::create_tenant(&st.pool, &req).await?),
+    ))
 }
 
 async fn list_tenants(State(st): State<AppState>) -> Result<Json<Vec<TenantResponse>>, AppError> {
@@ -112,7 +119,10 @@ async fn ingest_auth(st: &AppState, headers: &HeaderMap) -> Result<IngestAuth, A
     Ok(IngestAuth::Dev(resolve_tenant(&st.pool, headers).await?))
 }
 
-fn apply_agent_identity(ident: &corpus_core::agents::AgentIdentity, occ: &mut Option<OccurrenceInfo>) {
+fn apply_agent_identity(
+    ident: &corpus_core::agents::AgentIdentity,
+    occ: &mut Option<OccurrenceInfo>,
+) {
     if let Some(occ) = occ {
         occ.agent_id = ident.agent_id;
         occ.host_name = ident.host_name.clone();
@@ -172,7 +182,10 @@ async fn create_rule(
     Ok(Json(registry::create_rule(&st.pool, t, &req.source).await?))
 }
 
-async fn list_rules(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Vec<RuleResponse>>, AppError> {
+async fn list_rules(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<RuleResponse>>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
     Ok(Json(registry::list_rules(&st.pool, t).await?))
 }
@@ -183,7 +196,9 @@ async fn publish_bundle(
     Json(req): Json<BundlePublishRequest>,
 ) -> Result<Json<BundleResponse>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
-    Ok(Json(registry::publish_bundle(&st.pool, t, &req.rule_ids, req.activate).await?))
+    Ok(Json(
+        registry::publish_bundle(&st.pool, t, &req.rule_ids, req.activate).await?,
+    ))
 }
 
 async fn list_bundles(
@@ -200,10 +215,15 @@ async fn create_hunt(
     Json(req): Json<HuntCreateRequest>,
 ) -> Result<Json<HuntResponse>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
-    Ok(Json(hunts::create_hunt(&st.pool, t, &req.bundle_digest).await?))
+    Ok(Json(
+        hunts::create_hunt(&st.pool, t, &req.bundle_digest).await?,
+    ))
 }
 
-async fn list_hunts(State(st): State<AppState>, headers: HeaderMap) -> Result<Json<Vec<HuntResponse>>, AppError> {
+async fn list_hunts(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<HuntResponse>>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
     Ok(Json(hunts::list_hunts(&st.pool, t).await?))
 }
@@ -312,7 +332,9 @@ async fn enroll(
     State(st): State<AppState>,
     Json(req): Json<EnrollRequest>,
 ) -> Result<Json<EnrollResponse>, AppError> {
-    Ok(Json(corpus_core::agents::enroll(&st.pool, &st.ca, &req).await?))
+    Ok(Json(
+        corpus_core::agents::enroll(&st.pool, &st.ca, &req).await?,
+    ))
 }
 
 // ---------- mTLS agent listener (M6) ----------
@@ -321,7 +343,10 @@ async fn enroll(
 #[derive(Clone)]
 struct PeerCertDer(Option<Vec<u8>>);
 
-async fn peer_identity(st: &AppState, peer: &PeerCertDer) -> Result<corpus_core::agents::AgentIdentity, AppError> {
+async fn peer_identity(
+    st: &AppState,
+    peer: &PeerCertDer,
+) -> Result<corpus_core::agents::AgentIdentity, AppError> {
     let der = peer
         .0
         .as_ref()
@@ -355,7 +380,10 @@ async fn renew_cert_mtls(
     Extension(peer): Extension<PeerCertDer>,
 ) -> Result<Json<RenewCertResponse>, AppError> {
     let ident = peer_identity(&st, &peer).await?;
-    Ok(Json(corpus_core::agents::renew_cert(&st.ca, ident.agent_id)?))
+    Ok(Json(corpus_core::agents::renew_cert(
+        &st.ca,
+        ident.agent_id,
+    )?))
 }
 
 async fn announce_mtls(
@@ -365,7 +393,9 @@ async fn announce_mtls(
 ) -> Result<Json<AnnounceResponse>, AppError> {
     let ident = peer_identity(&st, &peer).await?;
     apply_agent_identity(&ident, &mut req.occurrence);
-    Ok(Json(ingest::announce(&st.pool, ident.tenant_id, &req).await?))
+    Ok(Json(
+        ingest::announce(&st.pool, ident.tenant_id, &req).await?,
+    ))
 }
 
 async fn upload_mtls(
@@ -386,7 +416,9 @@ async fn finalize_mtls(
 ) -> Result<Json<FinalizeResponse>, AppError> {
     let ident = peer_identity(&st, &peer).await?;
     apply_agent_identity(&ident, &mut req.occurrence);
-    Ok(Json(ingest::finalize(&st.pool, &st.cas, ident.tenant_id, &req).await?))
+    Ok(Json(
+        ingest::finalize(&st.pool, &st.cas, ident.tenant_id, &req).await?,
+    ))
 }
 
 /// Accept loop for the mTLS agent listener: rustls with required client
@@ -430,9 +462,10 @@ async fn run_agent_listener(
             let app = router.layer(AxExtension(PeerCertDer(peer)));
             let io = hyper_util::rt::TokioIo::new(tls);
             let service = hyper_util::service::TowerToHyperService::new(app.into_service());
-            let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection_with_upgrades(io, service)
-                .await;
+            let _ =
+                hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
+                    .serve_connection_with_upgrades(io, service)
+                    .await;
         });
     }
 }
@@ -478,7 +511,9 @@ async fn agent_status(
     Path(agent_id): Path<Uuid>,
 ) -> Result<Json<AgentStatusResponse>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
-    Ok(Json(corpus_core::agents::agent_status(&st.pool, t, agent_id).await?))
+    Ok(Json(
+        corpus_core::agents::agent_status(&st.pool, t, agent_id).await?,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -494,8 +529,13 @@ async fn coverage_gaps(
 ) -> Result<Json<Vec<CoverageGapRow>>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
     Ok(Json(
-        corpus_core::agents::coverage_gaps(&st.pool, t, q.outcome.as_deref(), q.limit.unwrap_or(100))
-            .await?,
+        corpus_core::agents::coverage_gaps(
+            &st.pool,
+            t,
+            q.outcome.as_deref(),
+            q.limit.unwrap_or(100),
+        )
+        .await?,
     ))
 }
 
@@ -514,7 +554,8 @@ async fn upsert_indicators(
             raw: i.raw.unwrap_or_else(|| serde_json::json!({})),
         })
         .collect();
-    let upserted = corpus_core::intel::upsert_indicators(&st.pool, t, &req.source, &indicators).await?;
+    let upserted =
+        corpus_core::intel::upsert_indicators(&st.pool, t, &req.source, &indicators).await?;
     Ok(Json(IndicatorsUpsertResponse { upserted }))
 }
 
@@ -572,7 +613,9 @@ async fn set_opinion(
     let t = resolve_tenant(&st.pool, &headers).await?;
     let id = artifact_id_for(&st.pool, t, &sha256).await?;
     let actor = req.actor.unwrap_or_else(|| "corpusctl".into());
-    let oid = corpus_core::opinions::set_opinion(&st.pool, t, id, &req.opinion, &actor, &req.reason).await?;
+    let oid =
+        corpus_core::opinions::set_opinion(&st.pool, t, id, &req.opinion, &actor, &req.reason)
+            .await?;
     let current = corpus_core::opinions::current_opinion(&st.pool, t, id)
         .await?
         .ok_or_else(|| Error::NotFound("opinion".into()))?;
@@ -594,14 +637,16 @@ async fn get_opinion(
 ) -> Result<Json<Option<OpinionView>>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
     let id = artifact_id_for(&st.pool, t, &sha256).await?;
-    let view = corpus_core::opinions::current_opinion(&st.pool, t, id).await?.map(|o| OpinionView {
-        id: o.id,
-        opinion: o.opinion,
-        actor: o.actor,
-        reason: o.reason,
-        created_at: o.created_at,
-        superseded_by: o.superseded_by,
-    });
+    let view = corpus_core::opinions::current_opinion(&st.pool, t, id)
+        .await?
+        .map(|o| OpinionView {
+            id: o.id,
+            opinion: o.opinion,
+            actor: o.actor,
+            reason: o.reason,
+            created_at: o.created_at,
+            superseded_by: o.superseded_by,
+        });
     Ok(Json(view))
 }
 
@@ -693,9 +738,15 @@ async fn create_trigger(
     Json(req): Json<TriggerCreateRequest>,
 ) -> Result<Json<TriggerCreateResponse>, AppError> {
     let t = resolve_tenant(&st.pool, &headers).await?;
-    let (row, secret) =
-        corpus_core::triggers::create_trigger(&st.pool, t, &req.name, &req.condition, &req.webhook_url, req.secret)
-            .await?;
+    let (row, secret) = corpus_core::triggers::create_trigger(
+        &st.pool,
+        t,
+        &req.name,
+        &req.condition,
+        &req.webhook_url,
+        req.secret,
+    )
+    .await?;
     Ok(Json(TriggerCreateResponse {
         trigger: TriggerView {
             id: row.id,
@@ -788,36 +839,57 @@ mod mcp {
         let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         match method {
-            "initialize" => result(&id, json!({
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "corpus-mcp", "version": env!("CARGO_PKG_VERSION")},
-                "capabilities": {"tools": {}},
-            })),
-            "tools/list" => result(&id, json!({"tools": [
-                {"name": "search_artifacts", "description": "Rarity search over endpoint artifacts",
-                 "inputSchema": {"type": "object", "properties": {"max_hosts": {"type": "integer"}, "since": {"type": "string"}}}},
-                {"name": "get_prevalence", "description": "Fleet prevalence for an artifact by sha256",
-                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
-                {"name": "get_opinion", "description": "Current human opinion for an artifact",
-                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
-                {"name": "blast_radius", "description": "Blast-radius report by sha256 (historical observation)",
-                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
-                {"name": "list_variants", "description": "Variant group members for an artifact",
-                 "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
-            ]})),
+            "initialize" => result(
+                &id,
+                json!({
+                    "protocolVersion": "2024-11-05",
+                    "serverInfo": {"name": "corpus-mcp", "version": env!("CARGO_PKG_VERSION")},
+                    "capabilities": {"tools": {}},
+                }),
+            ),
+            "tools/list" => result(
+                &id,
+                json!({"tools": [
+                    {"name": "search_artifacts", "description": "Rarity search over endpoint artifacts",
+                     "inputSchema": {"type": "object", "properties": {"max_hosts": {"type": "integer"}, "since": {"type": "string"}}}},
+                    {"name": "get_prevalence", "description": "Fleet prevalence for an artifact by sha256",
+                     "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                    {"name": "get_opinion", "description": "Current human opinion for an artifact",
+                     "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                    {"name": "blast_radius", "description": "Blast-radius report by sha256 (historical observation)",
+                     "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                    {"name": "list_variants", "description": "Variant group members for an artifact",
+                     "inputSchema": {"type": "object", "properties": {"sha256": {"type": "string"}}, "required": ["sha256"]}},
+                ]}),
+            ),
             "tools/call" => {
-                let name = req.pointer("/params/name").and_then(|n| n.as_str()).unwrap_or("");
-                let args = req.pointer("/params/arguments").cloned().unwrap_or_else(|| json!({}));
+                let name = req
+                    .pointer("/params/name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("");
+                let args = req
+                    .pointer("/params/arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 call(st, tenant, &id, name, args).await
             }
             _ => error(&id, -32601, "method not found"),
         }
     }
 
-    async fn call(st: &AppState, tenant: Uuid, id: &serde_json::Value, name: &str, args: serde_json::Value) -> serde_json::Value {
+    async fn call(
+        st: &AppState,
+        tenant: Uuid,
+        id: &serde_json::Value,
+        name: &str,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
         let text: String = match name {
             "search_artifacts" => {
-                let since = args.get("since").and_then(|s| s.as_str()).map(corpus_core::analyst::parse_since);
+                let since = args
+                    .get("since")
+                    .and_then(|s| s.as_str())
+                    .map(corpus_core::analyst::parse_since);
                 let since = match since {
                     Some(Ok(t)) => t,
                     Some(Err(e)) => return error(id, -32602, &e.to_string()),
@@ -910,10 +982,19 @@ async fn main() -> anyhow::Result<()> {
     // with client certs signed by this CA.
     let ca_dir = std::env::var("CORPUS_CA_DIR").unwrap_or_else(|_| "./data/ca".into());
     let extra_sans: Vec<String> = std::env::var("CORPUS_CA_SANS")
-        .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
-    let ca = std::sync::Arc::new(corpus_core::mtls::load_or_create_ca(std::path::Path::new(&ca_dir), &extra_sans)?);
-    let agent_listen = std::env::var("CORPUS_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
+    let ca = std::sync::Arc::new(corpus_core::mtls::load_or_create_ca(
+        std::path::Path::new(&ca_dir),
+        &extra_sans,
+    )?);
+    let agent_listen =
+        std::env::var("CORPUS_AGENT_LISTEN").unwrap_or_else(|_| "127.0.0.1:8443".into());
 
     let app = Router::new()
         .route("/api/v1/health", get(health))
@@ -941,15 +1022,25 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/intel/indicators", post(upsert_indicators))
         .route("/api/v1/intel/hash-hunt", post(hash_hunt))
         .route("/api/v1/artifacts/{sha256}/prevalence", get(prevalence))
-        .route("/api/v1/artifacts/{sha256}/opinion", post(set_opinion).get(get_opinion))
-        .route("/api/v1/artifacts/{sha256}/opinion/history", get(opinion_history))
+        .route(
+            "/api/v1/artifacts/{sha256}/opinion",
+            post(set_opinion).get(get_opinion),
+        )
+        .route(
+            "/api/v1/artifacts/{sha256}/opinion/history",
+            get(opinion_history),
+        )
         .route("/api/v1/search", get(rarity_search))
         .route("/api/v1/hunts/droppers", post(dropper_hunt))
         .route("/api/v1/triggers", post(create_trigger).get(list_triggers))
         .route("/api/v1/triggers/{trigger_id}/test", post(test_trigger))
         .route("/mcp", post(mcp_endpoint))
         .layer(axum::extract::DefaultBodyLimit::max(512 * 1024 * 1024))
-        .with_state(AppState { pool: pool.clone(), cas: std::sync::Arc::new(cas), ca: ca.clone() });
+        .with_state(AppState {
+            pool: pool.clone(),
+            cas: std::sync::Arc::new(cas),
+            ca: ca.clone(),
+        });
 
     // mTLS agent listener (M6): /agents/* + authenticated ingest behind
     // required client certificates.
@@ -959,7 +1050,8 @@ async fn main() -> anyhow::Result<()> {
         let agent_ca = ca.clone();
         let agent_listen = agent_listen.clone();
         tokio::spawn(async move {
-            if let Err(e) = run_agent_listener(&agent_listen, agent_ca, agent_pool, agent_cas).await {
+            if let Err(e) = run_agent_listener(&agent_listen, agent_ca, agent_pool, agent_cas).await
+            {
                 tracing::error!(error = %e, "mTLS agent listener failed");
             }
         });

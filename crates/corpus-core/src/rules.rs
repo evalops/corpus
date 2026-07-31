@@ -6,7 +6,8 @@ use sha2::{Digest, Sha256};
 
 /// Compiler configuration folded into every bundle digest. Bumping this
 /// invalidates prior digests, which is the point: bundles are immutable.
-pub const COMPILER_CONFIG: &str = concat!("yara-x-compiler:v1;engine=", env!("CORPUS_YARA_X_VERSION"));
+pub const COMPILER_CONFIG: &str =
+    concat!("yara-x-compiler:v1;engine=", env!("CORPUS_YARA_X_VERSION"));
 
 /// Strip `//` and `/* */` comments so the name parser does not trip on
 /// commented-out rules.
@@ -50,10 +51,16 @@ pub fn parse_rule_name(source: &str) -> Result<String> {
     match positions.len() {
         1 => {
             let name = tokens[positions[0] + 1];
-            if name.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') {
+            if name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            {
                 Ok(name.to_string())
             } else {
-                Err(Error::RuleParse(format!("invalid rule identifier {name:?}")))
+                Err(Error::RuleParse(format!(
+                    "invalid rule identifier {name:?}"
+                )))
             }
         }
         0 => Err(Error::RuleParse("no `rule` definition found".into())),

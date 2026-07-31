@@ -62,7 +62,11 @@ pub async fn create_rule(pool: &PgPool, tenant_id: Uuid, source: &str) -> Result
     Ok(row.into_response())
 }
 
-pub async fn get_rule_by_stable_id(pool: &PgPool, tenant_id: Uuid, stable_id: &str) -> Result<Option<RuleRow>> {
+pub async fn get_rule_by_stable_id(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    stable_id: &str,
+) -> Result<Option<RuleRow>> {
     Ok(sqlx::query_as::<_, RuleRow>(
         "SELECT id, namespace, stable_id, source, state, created_at
          FROM rule WHERE tenant_id = $1 AND stable_id = $2",
@@ -95,7 +99,9 @@ pub async fn publish_bundle(
     activate: bool,
 ) -> Result<BundleResponse> {
     if rule_ids.is_empty() {
-        return Err(Error::BadRequest("bundle requires at least one rule".into()));
+        return Err(Error::BadRequest(
+            "bundle requires at least one rule".into(),
+        ));
     }
 
     let mut members = Vec::new();
@@ -110,7 +116,10 @@ pub async fn publish_bundle(
         .await?
         .ok_or_else(|| Error::NotFound(format!("rule {id}")))?;
         if rule.state == "REVOKED" {
-            return Err(Error::BadRequest(format!("rule {} is REVOKED", rule.stable_id)));
+            return Err(Error::BadRequest(format!(
+                "rule {} is REVOKED",
+                rule.stable_id
+            )));
         }
         members.push(rule);
     }
@@ -267,7 +276,11 @@ pub async fn list_bundles(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<BundleRe
 
 /// Ordered (namespace, source) pairs for a bundle, used to compile the
 /// immutable bundle for scanning.
-pub async fn bundle_sources(pool: &PgPool, tenant_id: Uuid, bundle_id: Uuid) -> Result<Vec<(String, String)>> {
+pub async fn bundle_sources(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    bundle_id: Uuid,
+) -> Result<Vec<(String, String)>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT r.namespace, r.source
          FROM rule_bundle_rule rbr JOIN rule r ON r.id = rbr.rule_id

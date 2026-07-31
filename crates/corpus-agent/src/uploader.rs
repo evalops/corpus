@@ -56,13 +56,20 @@ impl Uploader {
     }
 
     pub async fn announce(&self, req: &AnnounceRequest) -> Result<AnnounceResponse> {
-        let resp = self.req(reqwest::Method::POST, "/api/v1/artifacts/announce").json(req).send().await?;
+        let resp = self
+            .req(reqwest::Method::POST, "/api/v1/artifacts/announce")
+            .json(req)
+            .send()
+            .await?;
         self.decode(resp).await
     }
 
     pub async fn upload(&self, upload_id: Uuid, bytes: Vec<u8>) -> Result<()> {
         let resp = self
-            .req(reqwest::Method::PUT, &format!("/api/v1/artifacts/uploads/{upload_id}"))
+            .req(
+                reqwest::Method::PUT,
+                &format!("/api/v1/artifacts/uploads/{upload_id}"),
+            )
             .body(bytes)
             .send()
             .await?;
@@ -75,12 +82,20 @@ impl Uploader {
     }
 
     pub async fn finalize(&self, req: &FinalizeRequest) -> Result<FinalizeResponse> {
-        let resp = self.req(reqwest::Method::POST, "/api/v1/artifacts/finalize").json(req).send().await?;
+        let resp = self
+            .req(reqwest::Method::POST, "/api/v1/artifacts/finalize")
+            .json(req)
+            .send()
+            .await?;
         self.decode(resp).await
     }
 
     pub async fn heartbeat(&self, hb: &HeartbeatRequest) -> Result<()> {
-        let resp = self.req(reqwest::Method::POST, "/api/v1/agents/heartbeat").json(hb).send().await?;
+        let resp = self
+            .req(reqwest::Method::POST, "/api/v1/agents/heartbeat")
+            .json(hb)
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -90,7 +105,11 @@ impl Uploader {
     }
 
     pub async fn report_gaps(&self, gaps: &[GapEvent]) -> Result<()> {
-        let resp = self.req(reqwest::Method::POST, "/api/v1/agents/gaps").json(&gaps).send().await?;
+        let resp = self
+            .req(reqwest::Method::POST, "/api/v1/agents/gaps")
+            .json(&gaps)
+            .send()
+            .await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -103,7 +122,10 @@ impl Uploader {
     pub async fn enroll(base: &str, req: &EnrollRequest) -> Result<EnrollResponse> {
         let http = reqwest::Client::new();
         let resp = http
-            .post(format!("{}/api/v1/agents/enroll", base.trim_end_matches('/')))
+            .post(format!(
+                "{}/api/v1/agents/enroll",
+                base.trim_end_matches('/')
+            ))
             .json(req)
             .send()
             .await?;

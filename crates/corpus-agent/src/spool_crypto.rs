@@ -41,15 +41,21 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 fn load_or_create_key_bytes(#[allow(unused_variables)] state_dir: &Path) -> Result<[u8; 32]> {
     #[cfg(target_os = "macos")]
     {
-        if let Ok(existing) = security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
+        if let Ok(existing) =
+            security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
+        {
             let key: [u8; 32] = existing
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("corrupt keychain spool key length"))?;
             return Ok(key);
         }
         let key = random_bytes::<32>();
-        security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT, &key)
-            .context("storing spool key in macOS Keychain")?;
+        security_framework::passwords::set_generic_password(
+            KEYCHAIN_SERVICE,
+            KEYCHAIN_ACCOUNT,
+            &key,
+        )
+        .context("storing spool key in macOS Keychain")?;
         Ok(key)
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -80,7 +86,9 @@ fn load_or_create_key_bytes(#[allow(unused_variables)] state_dir: &Path) -> Resu
 impl SpoolCipher {
     pub fn load_or_create(state_dir: &Path) -> Result<SpoolCipher> {
         let key = load_or_create_key_bytes(state_dir)?;
-        Ok(SpoolCipher { cipher: XChaCha20Poly1305::new_from_slice(&key).context("key length")? })
+        Ok(SpoolCipher {
+            cipher: XChaCha20Poly1305::new_from_slice(&key).context("key length")?,
+        })
     }
 
     /// nonce (24B) || ciphertext || tag.
@@ -89,7 +97,10 @@ impl SpoolCipher {
     pub fn encrypt(&self, plaintext: &[u8]) -> Vec<u8> {
         let nonce_bytes = random_bytes::<24>();
         let nonce = XNonce::from_slice(&nonce_bytes);
-        let ct = self.cipher.encrypt(nonce, plaintext).expect("AEAD encrypt is infallible");
+        let ct = self
+            .cipher
+            .encrypt(nonce, plaintext)
+            .expect("AEAD encrypt is infallible");
         let mut out = Vec::with_capacity(24 + ct.len());
         out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ct);
@@ -103,7 +114,9 @@ impl SpoolCipher {
         nonce_bytes[..8].copy_from_slice(prefix);
         nonce_bytes[8..].copy_from_slice(&(index as u128).to_le_bytes());
         let nonce = XNonce::from_slice(&nonce_bytes);
-        self.cipher.encrypt(nonce, chunk).expect("AEAD encrypt is infallible")
+        self.cipher
+            .encrypt(nonce, chunk)
+            .expect("AEAD encrypt is infallible")
     }
 
     pub fn decrypt_chunk(&self, prefix: &[u8; 8], index: u64, ct: &[u8]) -> Result<Vec<u8>> {
@@ -111,9 +124,9 @@ impl SpoolCipher {
         nonce_bytes[..8].copy_from_slice(prefix);
         nonce_bytes[8..].copy_from_slice(&(index as u128).to_le_bytes());
         let nonce = XNonce::from_slice(&nonce_bytes);
-        self.cipher
-            .decrypt(nonce, ct)
-            .map_err(|_| anyhow::anyhow!("spool chunk failed AEAD verification (tampered or wrong key)"))
+        self.cipher.decrypt(nonce, ct).map_err(|_| {
+            anyhow::anyhow!("spool chunk failed AEAD verification (tampered or wrong key)")
+        })
     }
 
     /// New 8-byte stream prefix identifying one spool object.
@@ -128,9 +141,9 @@ impl SpoolCipher {
         }
         let (nonce_bytes, ct) = blob.split_at(24);
         let nonce = XNonce::from_slice(nonce_bytes);
-        self.cipher
-            .decrypt(nonce, ct)
-            .map_err(|_| anyhow::anyhow!("spool chunk failed AEAD verification (tampered or wrong key)"))
+        self.cipher.decrypt(nonce, ct).map_err(|_| {
+            anyhow::anyhow!("spool chunk failed AEAD verification (tampered or wrong key)")
+        })
     }
 }
 
@@ -166,7 +179,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cipher = SpoolCipher::load_or_create(dir.path()).unwrap();
         let prefix = SpoolCipher::stream_prefix();
-        let chunks: Vec<Vec<u8>> = vec![b"chunk one".to_vec(), vec![7u8; 100_000], b"tail".to_vec()];
+        let chunks: Vec<Vec<u8>> =
+            vec![b"chunk one".to_vec(), vec![7u8; 100_000], b"tail".to_vec()];
         let encrypted: Vec<Vec<u8>> = chunks
             .iter()
             .enumerate()
@@ -191,7 +205,9 @@ pub fn load_or_create_file(state_dir: &std::path::Path) -> Result<SpoolCipher> {
         let key: [u8; 32] = existing
             .try_into()
             .map_err(|_| anyhow::anyhow!("corrupt spool key file"))?;
-        return Ok(SpoolCipher { cipher: XChaCha20Poly1305::new_from_slice(&key).context("key length")? });
+        return Ok(SpoolCipher {
+            cipher: XChaCha20Poly1305::new_from_slice(&key).context("key length")?,
+        });
     }
     let key = random_bytes::<32>();
     std::fs::create_dir_all(state_dir)?;
@@ -201,7 +217,9 @@ pub fn load_or_create_file(state_dir: &std::path::Path) -> Result<SpoolCipher> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
     }
-    Ok(SpoolCipher { cipher: XChaCha20Poly1305::new_from_slice(&key).context("key length")? })
+    Ok(SpoolCipher {
+        cipher: XChaCha20Poly1305::new_from_slice(&key).context("key length")?,
+    })
 }
 
 /// Decrypt a spool blob: [8B prefix][u32 len][ct][u32 len][ct]...

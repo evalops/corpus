@@ -20,7 +20,11 @@ pub struct FanotifySensor {
 
 #[derive(Debug)]
 pub enum SensorEventKind {
-    File { path: PathBuf, priority: i64, reason: &'static str },
+    File {
+        path: PathBuf,
+        priority: i64,
+        reason: &'static str,
+    },
     Overflow,
 }
 
@@ -76,7 +80,13 @@ fn init_fanotify(mounts: &[PathBuf]) -> Result<RawFd> {
         let mut marked = false;
         for mask in tiers {
             let rc = unsafe {
-                libc::fanotify_mark(fd, libc::FAN_MARK_ADD | libc::FAN_MARK_MOUNT, mask, libc::AT_FDCWD, cpath.as_ptr())
+                libc::fanotify_mark(
+                    fd,
+                    libc::FAN_MARK_ADD | libc::FAN_MARK_MOUNT,
+                    mask,
+                    libc::AT_FDCWD,
+                    cpath.as_ptr(),
+                )
             };
             if rc == 0 {
                 marked = true;
@@ -119,7 +129,9 @@ fn drain_fd(fd: RawFd, tx: &std_mpsc::Sender<SensorEventKind>) {
             // SAFETY: the kernel lays out fanotify_event_metadata at offset;
             // alignment is guaranteed for the first event and event_len
             // strides thereafter.
-            let meta = unsafe { (buf.as_ptr().add(offset) as *const libc::fanotify_event_metadata).read_unaligned() };
+            let meta = unsafe {
+                (buf.as_ptr().add(offset) as *const libc::fanotify_event_metadata).read_unaligned()
+            };
             let event_len = meta.event_len as usize;
             if event_len < METADATA_LEN || offset + event_len > n {
                 break;
@@ -138,7 +150,11 @@ fn drain_fd(fd: RawFd, tx: &std_mpsc::Sender<SensorEventKind>) {
                         } else {
                             (priority::WRITTEN_OR_RENAMED, "close_write")
                         };
-                        let _ = tx.send(SensorEventKind::File { path, priority: prio, reason });
+                        let _ = tx.send(SensorEventKind::File {
+                            path,
+                            priority: prio,
+                            reason,
+                        });
                     }
                 }
                 // SAFETY: fd was provided by the kernel for this event.
@@ -168,7 +184,11 @@ impl FanotifySensor {
         tracing::info!("fanotify sensor active");
         loop {
             match self.rx.recv() {
-                Ok(SensorEventKind::File { path, priority: prio, reason }) => {
+                Ok(SensorEventKind::File {
+                    path,
+                    priority: prio,
+                    reason,
+                }) => {
                     let s = path.to_string_lossy();
                     if crate::config::matches_exclusion(&exclusions, &s) {
                         continue;
@@ -179,7 +199,14 @@ impl FanotifySensor {
                 }
                 Ok(SensorEventKind::Overflow) => {
                     tracing::error!("fanotify queue overflow: recording SENSOR_OVERFLOW gap");
-                    if let Err(e) = db.record_gap("fanotify", OUTCOME_SENSOR_OVERFLOW, None, None, Some("QUEUE_OVERFLOW"), "{}") {
+                    if let Err(e) = db.record_gap(
+                        "fanotify",
+                        OUTCOME_SENSOR_OVERFLOW,
+                        None,
+                        None,
+                        Some("QUEUE_OVERFLOW"),
+                        "{}",
+                    ) {
                         tracing::error!(error = %e, "failed to record overflow gap");
                     }
                 }

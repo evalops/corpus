@@ -31,11 +31,14 @@ pub fn parse_usn_records(buf: &[u8]) -> Vec<UsnRecord> {
             break;
         }
         let file_reference = u64::from_le_bytes(buf[offset + 8..offset + 16].try_into().unwrap());
-        let parent_reference = u64::from_le_bytes(buf[offset + 16..offset + 24].try_into().unwrap());
+        let parent_reference =
+            u64::from_le_bytes(buf[offset + 16..offset + 24].try_into().unwrap());
         let usn = i64::from_le_bytes(buf[offset + 24..offset + 32].try_into().unwrap());
         let reason = u32::from_le_bytes(buf[offset + 40..offset + 44].try_into().unwrap());
-        let name_len = u16::from_le_bytes(buf[offset + 56..offset + 58].try_into().unwrap()) as usize;
-        let name_off = u16::from_le_bytes(buf[offset + 58..offset + 60].try_into().unwrap()) as usize;
+        let name_len =
+            u16::from_le_bytes(buf[offset + 56..offset + 58].try_into().unwrap()) as usize;
+        let name_off =
+            u16::from_le_bytes(buf[offset + 58..offset + 60].try_into().unwrap()) as usize;
         if name_off + name_len <= record_len {
             let wide: Vec<u16> = buf[offset + name_off..offset + name_off + name_len]
                 .chunks_exact(2)
@@ -80,12 +83,24 @@ pub fn read_journal(root: &std::path::Path, start_usn: i64) -> Vec<UsnRecord> {
         "\\\\.\\{}:",
         root.components()
             .next()
-            .map(|c| c.as_os_str().to_string_lossy().trim_end_matches(':').to_string())
+            .map(|c| c
+                .as_os_str()
+                .to_string_lossy()
+                .trim_end_matches(':')
+                .to_string())
             .unwrap_or_else(|| "C".into())
     );
     let wide: Vec<u16> = volume.encode_utf16().chain(std::iter::once(0)).collect();
     let handle = unsafe {
-        CreateFileW(wide.as_ptr(), 0x8000_0000 /* GENERIC_READ */, 0, std::ptr::null(), OPEN_EXISTING, 0, windows_sys::Win32::Foundation::HANDLE::default())
+        CreateFileW(
+            wide.as_ptr(),
+            0x8000_0000, /* GENERIC_READ */
+            0,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            windows_sys::Win32::Foundation::HANDLE::default(),
+        )
     };
     if handle == INVALID_HANDLE_VALUE || handle.is_null() {
         tracing::warn!(

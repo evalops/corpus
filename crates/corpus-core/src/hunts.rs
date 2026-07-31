@@ -55,7 +55,11 @@ const HUNT_COLS: &str = "id, kind, bundle_id, bundle_digest, state, corpus_water
      planned_artifacts, scanned, cache_hits, matched, timed_out, failed,
      error, created_at, started_at, completed_at";
 
-pub async fn create_hunt(pool: &PgPool, tenant_id: Uuid, bundle_digest: &str) -> Result<HuntResponse> {
+pub async fn create_hunt(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    bundle_digest: &str,
+) -> Result<HuntResponse> {
     let bundle = registry::get_bundle(pool, tenant_id, bundle_digest).await?;
     let id = Uuid::new_v4();
     let row = sqlx::query_as::<_, HuntRow>(&format!(
@@ -196,10 +200,17 @@ async fn cache_lookup(pool: &PgPool, key: &ScanCacheKey) -> Result<Option<CacheH
 ///
 /// Once a watermark has been pinned, re-runs reuse it (cache-replay path)
 /// and never expand the planned set to newer commits.
-pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid) -> Result<HuntResponse> {
+pub async fn run_hunt(
+    pool: &PgPool,
+    cas: &FsCas,
+    tenant_id: Uuid,
+    hunt_id: Uuid,
+) -> Result<HuntResponse> {
     let hunt = get_hunt(pool, tenant_id, hunt_id).await?;
     if hunt.kind != "retro" {
-        return Err(Error::BadRequest("only retro hunts are run explicitly".into()));
+        return Err(Error::BadRequest(
+            "only retro hunts are run explicitly".into(),
+        ));
     }
     if matches!(hunt.state.as_str(), "RUNNING" | "QUEUED") {
         return Err(Error::Conflict(format!("hunt {hunt_id} is {}", hunt.state)));
@@ -345,9 +356,18 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
                             scanned += 1;
                             for m in &outcome.matches {
                                 let summary = serde_json::to_value(m).unwrap_or_default();
-                                commit_match(pool, tenant_id, hunt_id, *artifact_id, &m.rule_id, summary).await?;
+                                commit_match(
+                                    pool,
+                                    tenant_id,
+                                    hunt_id,
+                                    *artifact_id,
+                                    &m.rule_id,
+                                    summary,
+                                )
+                                .await?;
                                 matched += 1;
-                                fire_hunt_match(pool, tenant_id, hunt_id, *artifact_id, &m.rule_id).await?;
+                                fire_hunt_match(pool, tenant_id, hunt_id, *artifact_id, &m.rule_id)
+                                    .await?;
                             }
                         }
                         ScanStatus::Clean => scanned += 1,
@@ -383,15 +403,13 @@ pub async fn run_hunt(pool: &PgPool, cas: &FsCas, tenant_id: Uuid, hunt_id: Uuid
     } else {
         "COMPLETED"
     };
-    sqlx::query(
-        "UPDATE hunt SET state = $3, completed_at = $4 WHERE id = $1 AND tenant_id = $2",
-    )
-    .bind(hunt_id)
-    .bind(tenant_id)
-    .bind(final_state)
-    .bind(Utc::now())
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE hunt SET state = $3, completed_at = $4 WHERE id = $1 AND tenant_id = $2")
+        .bind(hunt_id)
+        .bind(tenant_id)
+        .bind(final_state)
+        .bind(Utc::now())
+        .execute(pool)
+        .await?;
 
     get_hunt(pool, tenant_id, hunt_id).await
 }
@@ -424,7 +442,14 @@ pub async fn forward_scan(
         }
         let sources = registry::bundle_sources(pool, tenant_id, bundle_id).await?;
         let compiled = scan::compile_bundle(&sources).map_err(Error::RuleCompile)?;
-        let outcome = crate::sandbox::scan_with_tier(tier, &sources, Some(&compiled), bytes, Some(&sample_path)).await;
+        let outcome = crate::sandbox::scan_with_tier(
+            tier,
+            &sources,
+            Some(&compiled),
+            bytes,
+            Some(&sample_path),
+        )
+        .await;
         let rule_ids: Vec<String> = outcome.matches.iter().map(|m| m.rule_id.clone()).collect();
         commit_cache_entry(
             pool,
@@ -446,7 +471,15 @@ pub async fn forward_scan(
         {
             for m in &outcome.matches {
                 let summary = serde_json::to_value(m).unwrap_or_default();
-                commit_match(pool, tenant_id, forward_hunt_id, artifact_id, &m.rule_id, summary).await?;
+                commit_match(
+                    pool,
+                    tenant_id,
+                    forward_hunt_id,
+                    artifact_id,
+                    &m.rule_id,
+                    summary,
+                )
+                .await?;
             }
             // Count every terminal scan (clean, match, timeout, error) so the
             // forward hunt reflects post-commit coverage, not only hits.

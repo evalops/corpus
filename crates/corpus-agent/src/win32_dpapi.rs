@@ -7,7 +7,9 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
-use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB};
+use windows_sys::Win32::Security::Cryptography::{
+    CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
+};
 
 fn protect(data: &[u8]) -> Result<Vec<u8>> {
     unsafe {
@@ -16,8 +18,20 @@ fn protect(data: &[u8]) -> Result<Vec<u8>> {
             pbData: data.as_ptr() as *mut u8,
         };
         let mut output: CRYPT_INTEGER_BLOB = std::mem::zeroed();
-        if CryptProtectData(&mut input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output) == 0 {
-            anyhow::bail!("CryptProtectData failed: {}", std::io::Error::last_os_error());
+        if CryptProtectData(
+            &mut input,
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            &mut output,
+        ) == 0
+        {
+            anyhow::bail!(
+                "CryptProtectData failed: {}",
+                std::io::Error::last_os_error()
+            );
         }
         let out = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = windows_sys::Win32::Foundation::LocalFree(output.pbData as _);
@@ -32,8 +46,20 @@ fn unprotect(data: &[u8]) -> Result<Vec<u8>> {
             pbData: data.as_ptr() as *mut u8,
         };
         let mut output: CRYPT_INTEGER_BLOB = std::mem::zeroed();
-        if CryptUnprotectData(&mut input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, &mut output) == 0 {
-            anyhow::bail!("CryptUnprotectData failed: {}", std::io::Error::last_os_error());
+        if CryptUnprotectData(
+            &mut input,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            &mut output,
+        ) == 0
+        {
+            anyhow::bail!(
+                "CryptUnprotectData failed: {}",
+                std::io::Error::last_os_error()
+            );
         }
         let out = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
         let _ = windows_sys::Win32::Foundation::LocalFree(output.pbData as _);
@@ -55,7 +81,9 @@ pub fn load_or_create_key(state_dir: &Path) -> Result<[u8; 32]> {
     let path = state_dir.join("spool.key.dpapi");
     if let Ok(blob) = std::fs::read(&path) {
         let raw = unprotect(&blob).context("unwrapping spool key")?;
-        let key: [u8; 32] = raw.try_into().map_err(|_| anyhow::anyhow!("corrupt wrapped spool key"))?;
+        let key: [u8; 32] = raw
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("corrupt wrapped spool key"))?;
         return Ok(key);
     }
     let key = crate::spool_crypto::random_key_material();
