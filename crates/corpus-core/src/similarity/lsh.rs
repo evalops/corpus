@@ -41,12 +41,7 @@ pub fn band_keys(ssdeep: &str) -> Vec<(i32, String)> {
 }
 
 /// Replace LSH bands for one artifact.
-pub async fn store_bands(
-    pool: &PgPool,
-    tenant: Uuid,
-    artifact: Uuid,
-    ssdeep: &str,
-) -> Result<()> {
+pub async fn store_bands(pool: &PgPool, tenant: Uuid, artifact: Uuid, ssdeep: &str) -> Result<()> {
     sqlx::query("DELETE FROM similarity_lsh_band WHERE tenant_id = $1 AND artifact_id = $2")
         .bind(tenant)
         .bind(artifact)
@@ -111,19 +106,17 @@ pub async fn candidates(
 
 /// True when this tenant has any LSH rows (index is live).
 pub async fn index_populated(pool: &PgPool, tenant: Uuid) -> Result<bool> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM similarity_lsh_band WHERE tenant_id = $1 LIMIT 1",
-    )
-    .bind(tenant)
-    .fetch_one(pool)
-    .await?;
+    let n: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM similarity_lsh_band WHERE tenant_id = $1 LIMIT 1")
+            .bind(tenant)
+            .fetch_one(pool)
+            .await?;
     // COUNT(*) always returns a row; use EXISTS-style check via limit query.
-    let exists: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM similarity_lsh_band WHERE tenant_id = $1 LIMIT 1",
-    )
-    .bind(tenant)
-    .fetch_optional(pool)
-    .await?;
+    let exists: Option<(i32,)> =
+        sqlx::query_as("SELECT 1 FROM similarity_lsh_band WHERE tenant_id = $1 LIMIT 1")
+            .bind(tenant)
+            .fetch_optional(pool)
+            .await?;
     let _ = n;
     Ok(exists.is_some())
 }

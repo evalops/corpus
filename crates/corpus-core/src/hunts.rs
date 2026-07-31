@@ -200,11 +200,7 @@ async fn cache_lookup(pool: &PgPool, key: &ScanCacheKey) -> Result<Option<CacheH
 /// Enqueue a retro-hunt: validate, plan, pin watermark, leave state
 /// `QUEUED`, and insert a `hunt_job` row. The server worker (or a sync
 /// caller) runs [`execute_hunt`].
-pub async fn enqueue_hunt(
-    pool: &PgPool,
-    tenant_id: Uuid,
-    hunt_id: Uuid,
-) -> Result<HuntResponse> {
+pub async fn enqueue_hunt(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid) -> Result<HuntResponse> {
     let hunt = get_hunt(pool, tenant_id, hunt_id).await?;
     if hunt.kind != "retro" {
         return Err(Error::BadRequest(

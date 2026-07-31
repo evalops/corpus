@@ -241,9 +241,9 @@ pub fn check_min_tier(tier: ScannerTier) -> Option<String> {
              (subprocess/seatbelt is not a hostile-malware boundary)"
                 .into(),
         ),
-        Some(ScannerTier::Subprocess) if tier == ScannerTier::InProcess => Some(
-            "CORPUS_MIN_SCANNER_TIER=subprocess rejects inprocess scans".into(),
-        ),
+        Some(ScannerTier::Subprocess) if tier == ScannerTier::InProcess => {
+            Some("CORPUS_MIN_SCANNER_TIER=subprocess rejects inprocess scans".into())
+        }
         _ => None,
     }
 }
@@ -290,20 +290,12 @@ pub async fn scan_gvisor(
         .await;
     }
     if which_on_path("docker") {
-        return run_via_docker_runsc(
-            &scanner,
-            sample_path,
-            &job.to_string(),
-            timeout,
-            output_cap,
-        )
-        .await;
+        return run_via_docker_runsc(&scanner, sample_path, &job.to_string(), timeout, output_cap)
+            .await;
     }
-    Err(
-        "gvisor tier: neither `runsc` nor `docker` found on PATH; \
+    Err("gvisor tier: neither `runsc` nor `docker` found on PATH; \
          install gVisor on a Linux host (docs/deploy.md)"
-            .into(),
-    )
+        .into())
 }
 
 fn which_on_path(bin: &str) -> bool {
@@ -368,10 +360,7 @@ async fn run_via_docker_runsc(
     .arg(format!("{}:/sample:ro", sample_dir.display()))
     // Use the host's scanner as entrypoint via a generic image that can
     // execute a static/host binary is hard; instead mount and use alpine.
-    .args([
-        "alpine:3.20",
-        &format!("/scanner/{scanner_name}"),
-    ]);
+    .args(["alpine:3.20", &format!("/scanner/{scanner_name}")]);
     // Rewrite job to container paths.
     let job = job_json.replace(
         &sample_path.display().to_string(),
@@ -449,7 +438,14 @@ async fn run_via_runsc(
     if let Ok(bundle) = std::env::var("CORPUS_RUNSC_BUNDLE") {
         let mut cmd = tokio::process::Command::new("runsc");
         cmd.args(["--network=none", "run", "-bundle", &bundle, "corpus-scan"]);
-        let _ = (scanner, sample_dir, sample_name, job_json, timeout, output_cap);
+        let _ = (
+            scanner,
+            sample_dir,
+            sample_name,
+            job_json,
+            timeout,
+            output_cap,
+        );
         return Err(format!(
             "runsc bundle mode configured ({bundle}) but OCI bundle execution \
              is not wired in this build; use docker --runtime=runsc"

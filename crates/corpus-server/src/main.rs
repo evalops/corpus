@@ -307,9 +307,7 @@ async fn run_hunt(
         .unwrap_or(false)
         || std::env::var("CORPUS_HUNT_SYNC").is_ok();
     if sync {
-        return Ok(Json(
-            hunts::run_hunt(&st.pool, &st.cas, t, hunt_id).await?,
-        ));
+        return Ok(Json(hunts::run_hunt(&st.pool, &st.cas, t, hunt_id).await?));
     }
     let resp = hunts::enqueue_hunt(&st.pool, t, hunt_id).await?;
     // Local worker: spawn execute so the HTTP response returns while the

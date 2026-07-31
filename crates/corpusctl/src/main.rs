@@ -1072,17 +1072,14 @@ async fn main() -> Result<()> {
                             break;
                         }
                         if std::time::Instant::now() > deadline {
-                            bail!(
-                                "hunt {hunt_id} still {} after {wait_secs}s",
-                                hunt.state
-                            );
+                            bail!("hunt {hunt_id} still {} after {wait_secs}s", hunt.state);
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                         hunt = client
-                            .send(client.req(
-                                reqwest::Method::GET,
-                                &format!("/api/v1/hunts/{hunt_id}"),
-                            ))
+                            .send(
+                                client
+                                    .req(reqwest::Method::GET, &format!("/api/v1/hunts/{hunt_id}")),
+                            )
                             .await?;
                     }
                     print_hunt(&hunt);
