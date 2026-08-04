@@ -5,6 +5,9 @@
 //! small pool (max 8) suitable for a single-node server; production
 //! deployments can raise this via a future config surface.
 //!
+//! Each migration filename must have a unique numeric prefix because SQLx
+//! persists that prefix as the primary-keyed migration version.
+//!
 //! Call [`migrate`] once at process start before serving traffic.
 
 use crate::error::Result;
@@ -105,5 +108,35 @@ mod tests {
 
         assert_eq!(result, Ok(()));
         assert_eq!(observed_attempts.load(Ordering::Relaxed), 7);
+    }
+
+    #[test]
+    fn migration_versions_are_unique() {
+        use std::{collections::BTreeMap, fs, path::Path};
+
+        let migrations_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let mut versions = BTreeMap::new();
+
+        for entry in fs::read_dir(&migrations_dir).expect("read migrations directory") {
+            let path = entry.expect("read migration directory entry").path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("sql") {
+                continue;
+            }
+
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("migration filename is valid UTF-8")
+                .to_owned();
+            let (version, _) = name
+                .split_once('_')
+                .expect("migration filename has a numeric prefix");
+            let version: i64 = version.parse().expect("migration prefix is numeric");
+
+            assert!(
+                versions.insert(version, name).is_none(),
+                "duplicate migration version {version}"
+            );
+        }
     }
 }
