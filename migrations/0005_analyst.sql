@@ -1,8 +1,6 @@
 -- Milestone 5: analyst surface — opinions, triggers, audit.
 -- (Prevalence and dropper hunts are pure SQL over the occurrence ledger;
 -- proof-of-absence is computed, not stored.)
---
--- Analyst surface tables: opinions, prevalence support, rarity indexes.
 
 -- Human verdicts, separate from analyzer scores (spec 5.5). Append-only;
 -- the current opinion for an artifact is the latest row.

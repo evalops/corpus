@@ -1,7 +1,5 @@
 -- Milestone 4 (vault bootstrap): snapshot backfill, OCI ingestion,
 -- intel-corpus connectors.
---
--- Bootstrap helpers and seed data beyond the default tenant.
 
 -- Artifact scope separates endpoint-collected bytes from intel imports.
 -- Default queries (retro hunts, blast radius occurrence views) cover

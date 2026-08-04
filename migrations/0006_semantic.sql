@@ -1,6 +1,4 @@
 -- Milestone M8: per-function semantic signatures (spec 16.2/16.5).
---
--- Per-function signatures for semantic similarity (x86-64).
 
 CREATE TABLE similarity_function (
   tenant_id           uuid NOT NULL REFERENCES tenant (id),
