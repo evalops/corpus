@@ -1,0 +1,9 @@
+.git
+.github
+/target
+/data
+/testdata
+/testdata-late
+*.log
+Cargo.lock.bak
+.DS_Store
