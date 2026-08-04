@@ -139,4 +139,19 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn applied_agent_migration_checksum_is_immutable() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, path::Path};
+
+        let migration =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations/0002_agents.sql");
+        let checksum = hex::encode(Sha256::digest(fs::read(migration).expect("read migration")));
+
+        assert_eq!(
+            checksum, "45f16bac4c5d1021f7ed9636ebfa203767b828807bbaf53b7f6f53d2aeebb8d1",
+            "migration 0002 is already applied in production and must not be edited"
+        );
+    }
 }
