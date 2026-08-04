@@ -180,7 +180,9 @@ mod tests {
     #[test]
     fn unknown_version_fails_closed() {
         let reg = built_in_registry();
-        let err = reg.lookup("semantic-function", "semantic:v999").unwrap_err();
+        let err = reg
+            .lookup("semantic-function", "semantic:v999")
+            .unwrap_err();
         assert!(err.to_string().contains("unknown analyzer"));
     }
 

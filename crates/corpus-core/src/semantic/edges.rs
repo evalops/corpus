@@ -383,11 +383,7 @@ fn build_edge_evidence(cov: &Coverage, receipt: &AnalysisReceipt) -> serde_json:
     })
 }
 
-async fn load_functions(
-    pool: &PgPool,
-    tenant: Uuid,
-    artifact: Uuid,
-) -> Result<Vec<FunctionRow>> {
+async fn load_functions(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<Vec<FunctionRow>> {
     #[derive(sqlx::FromRow)]
     struct FnRow {
         func_offset: i64,
@@ -521,10 +517,22 @@ pub async fn function_pair_evidence(
             let fa = by_off_a.get(ao);
             let fb = by_off_b.get(bo);
             let tokens_a = fa
-                .map(|f| f.token_hashes.iter().take(max_tokens).copied().collect::<Vec<_>>())
+                .map(|f| {
+                    f.token_hashes
+                        .iter()
+                        .take(max_tokens)
+                        .copied()
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             let tokens_b = fb
-                .map(|f| f.token_hashes.iter().take(max_tokens).copied().collect::<Vec<_>>())
+                .map(|f| {
+                    f.token_hashes
+                        .iter()
+                        .take(max_tokens)
+                        .copied()
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             serde_json::json!({
                 "a": {

@@ -171,13 +171,12 @@ async fn concurrent_analysis_is_idempotent() {
     edges::analyze_artifact(pool.as_ref(), tenant_id, b, "pe", &pe_b)
         .await
         .unwrap();
-    let edge_counts_after: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM similarity_edge WHERE tenant_id = $1",
-    )
-    .bind(tenant_id)
-    .fetch_one(pool.as_ref())
-    .await
-    .unwrap();
+    let edge_counts_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM similarity_edge WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .fetch_one(pool.as_ref())
+            .await
+            .unwrap();
     let edge_counts_before: i64 = edge_counts.iter().map(|(_, n)| n).sum();
     // After retry, total edges for the pair types should be stable; allow other
     // edge types but no duplicates of the pair.
@@ -200,10 +199,12 @@ async fn concurrent_analysis_is_idempotent() {
     );
 
     // Cleanup created data.
-    let _ = corpus_core::similarity::lifecycle::cleanup_artifact(pool.as_ref(), tenant_id, a, false)
-        .await;
-    let _ = corpus_core::similarity::lifecycle::cleanup_artifact(pool.as_ref(), tenant_id, b, false)
-        .await;
+    let _ =
+        corpus_core::similarity::lifecycle::cleanup_artifact(pool.as_ref(), tenant_id, a, false)
+            .await;
+    let _ =
+        corpus_core::similarity::lifecycle::cleanup_artifact(pool.as_ref(), tenant_id, b, false)
+            .await;
 
     // Silence unused import warning if edge_type not used in asserts.
     let _ = edge_type::BYTE_SIMILAR;

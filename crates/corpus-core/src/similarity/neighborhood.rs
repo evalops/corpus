@@ -243,11 +243,7 @@ pub async fn query(
     Ok(resp)
 }
 
-async fn resolve_seed(
-    pool: &PgPool,
-    tenant: Uuid,
-    seed: &str,
-) -> Result<(Uuid, String, String)> {
+async fn resolve_seed(pool: &PgPool, tenant: Uuid, seed: &str) -> Result<(Uuid, String, String)> {
     if let Ok(id) = Uuid::parse_str(seed) {
         let row: Option<(Uuid, Vec<u8>, String)> = sqlx::query_as(
             "SELECT id, sha256, artifact_class FROM artifact

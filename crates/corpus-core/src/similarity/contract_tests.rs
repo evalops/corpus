@@ -47,7 +47,10 @@ fn assert_bounded_extract(bytes: &[u8], label: &str) {
                 "{label}/{fmt}: code section larger than input"
             );
             for sp in spans {
-                assert!(sp.size <= code.bytes.len() + 1, "{label}: span size unbounded");
+                assert!(
+                    sp.size <= code.bytes.len() + 1,
+                    "{label}: span size unbounded"
+                );
             }
         }
     }

@@ -3,8 +3,8 @@
 
 pub mod analyzers;
 pub mod edges;
-pub mod extract;
 pub mod export;
+pub mod extract;
 pub mod fuzzy;
 pub mod invalidation;
 pub mod lifecycle;

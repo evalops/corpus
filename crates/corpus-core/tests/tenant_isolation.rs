@@ -93,7 +93,13 @@ async fn identical_bytes_do_not_cross_tenants() {
     let boot = Uuid::new_v4();
 
     // Identical PE bytes in both tenants.
-    let pe = build_pe("KERNEL32.dll", "ExitProcess", b"shared-body-bytes!!", 0, None);
+    let pe = build_pe(
+        "KERNEL32.dll",
+        "ExitProcess",
+        b"shared-body-bytes!!",
+        0,
+        None,
+    );
     let a1 = commit(&pool, &cas, t1, agent, boot, 1, "/t1/a.exe", &pe).await;
     let a2 = commit(&pool, &cas, t2, agent, boot, 1, "/t2/a.exe", &pe).await;
 
@@ -152,7 +158,10 @@ async fn identical_bytes_do_not_cross_tenants() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(cross_pair, 0, "no edge may join artifacts of different tenants");
+    assert_eq!(
+        cross_pair, 0,
+        "no edge may join artifacts of different tenants"
+    );
 
     // Neighborhood stays in-tenant.
     let sha = hash::sha256_hex(&pe);
@@ -177,13 +186,12 @@ async fn identical_bytes_do_not_cross_tenants() {
     let ssdeep = corpus_core::similarity::fuzzy::fuzzy_hash(&pe);
     let _ = lsh::store_bands(&pool, t1, a1, &ssdeep).await;
     let _ = lsh::store_bands(&pool, t2, a2, &ssdeep).await;
-    let t1_bands: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT DISTINCT artifact_id FROM similarity_lsh_band WHERE tenant_id = $1",
-    )
-    .bind(t1)
-    .fetch_all(&pool)
-    .await
-    .unwrap_or_default();
+    let t1_bands: Vec<(Uuid,)> =
+        sqlx::query_as("SELECT DISTINCT artifact_id FROM similarity_lsh_band WHERE tenant_id = $1")
+            .bind(t1)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
     assert!(
         t1_bands.iter().all(|(id,)| *id != a2),
         "LSH bands must not leak tenant2 artifacts"

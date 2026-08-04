@@ -1477,7 +1477,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/artifacts/{sha256}/similar", get(similar))
         .route("/api/v1/artifacts/{sha256}/variants", get(variants))
         .route("/api/v1/similarity/backfill", post(similarity_backfill))
-        .route("/api/v1/similarity/neighborhood", get(similarity_neighborhood))
+        .route(
+            "/api/v1/similarity/neighborhood",
+            get(similarity_neighborhood),
+        )
         .route("/api/v1/similarity/export", get(similarity_export))
         .route("/api/v1/similarity/analyzers", get(list_analyzers))
         .route(

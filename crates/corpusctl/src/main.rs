@@ -1287,9 +1287,8 @@ async fn main() -> Result<()> {
                 if let Some(mv) = model_version {
                     url.push_str(&format!("&model_version={mv}"));
                 }
-                let resp: serde_json::Value = client
-                    .send(client.req(reqwest::Method::GET, &url))
-                    .await?;
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::GET, &url)).await?;
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             SimilarityCmd::Export {
@@ -1308,9 +1307,8 @@ async fn main() -> Result<()> {
                 if let Some(g) = group_id {
                     url.push_str(&format!("&group_id={g}"));
                 }
-                let resp: serde_json::Value = client
-                    .send(client.req(reqwest::Method::GET, &url))
-                    .await?;
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::GET, &url)).await?;
                 if let Some(body) = resp.get("body").and_then(|b| b.as_str()) {
                     print!("{body}");
                 } else {
@@ -1325,9 +1323,8 @@ async fn main() -> Result<()> {
                 let url = format!(
                     "/api/v1/similarity/evidence/{artifact_a}/{artifact_b}?max_pairs={max_pairs}"
                 );
-                let resp: serde_json::Value = client
-                    .send(client.req(reqwest::Method::GET, &url))
-                    .await?;
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::GET, &url)).await?;
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
             SimilarityCmd::Analyzers => {
@@ -1342,12 +1339,10 @@ async fn main() -> Result<()> {
                 execute,
             } => {
                 let dry = if execute { false } else { dry_run };
-                let url = format!(
-                    "/api/v1/artifacts/{artifact_id}/similarity-cleanup?dry_run={dry}"
-                );
-                let resp: serde_json::Value = client
-                    .send(client.req(reqwest::Method::POST, &url))
-                    .await?;
+                let url =
+                    format!("/api/v1/artifacts/{artifact_id}/similarity-cleanup?dry_run={dry}");
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::POST, &url)).await?;
                 println!("{}", serde_json::to_string_pretty(&resp)?);
             }
         },

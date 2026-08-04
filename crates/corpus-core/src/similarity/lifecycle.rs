@@ -237,13 +237,12 @@ async fn count_lsh(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<u64> {
 }
 
 async fn delete_lsh(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<()> {
-    let _ = sqlx::query(
-        "DELETE FROM similarity_lsh_band WHERE tenant_id = $1 AND artifact_id = $2",
-    )
-    .bind(tenant)
-    .bind(artifact)
-    .execute(pool)
-    .await;
+    let _ =
+        sqlx::query("DELETE FROM similarity_lsh_band WHERE tenant_id = $1 AND artifact_id = $2")
+            .bind(tenant)
+            .bind(artifact)
+            .execute(pool)
+            .await;
     Ok(())
 }
 
@@ -262,13 +261,11 @@ async fn count_receipts(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<u
 }
 
 async fn delete_receipts(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<()> {
-    let _ = sqlx::query(
-        "DELETE FROM analysis_receipt WHERE tenant_id = $1 AND artifact_id = $2",
-    )
-    .bind(tenant)
-    .bind(artifact)
-    .execute(pool)
-    .await;
+    let _ = sqlx::query("DELETE FROM analysis_receipt WHERE tenant_id = $1 AND artifact_id = $2")
+        .bind(tenant)
+        .bind(artifact)
+        .execute(pool)
+        .await;
     Ok(())
 }
 

@@ -220,7 +220,11 @@ fn render_json(graph: &NeighborhoodResponse) -> Result<String> {
             depth: n.depth,
         })
         .collect();
-    nodes.sort_by(|a, b| a.sha256.cmp(&b.sha256).then(a.artifact_id.cmp(&b.artifact_id)));
+    nodes.sort_by(|a, b| {
+        a.sha256
+            .cmp(&b.sha256)
+            .then(a.artifact_id.cmp(&b.artifact_id))
+    });
     let mut edges: Vec<_> = graph
         .edges
         .iter()
@@ -251,8 +255,7 @@ fn render_json(graph: &NeighborhoodResponse) -> Result<String> {
         nodes,
         edges,
     };
-    serde_json::to_string_pretty(&c)
-        .map_err(|e| Error::BadRequest(format!("json serialize: {e}")))
+    serde_json::to_string_pretty(&c).map_err(|e| Error::BadRequest(format!("json serialize: {e}")))
 }
 
 fn render_dot(graph: &NeighborhoodResponse) -> String {
