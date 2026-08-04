@@ -1,4 +1,9 @@
-//! Agent configuration file, modeled on the spec 10.9 default policy.
+//! Agent configuration loaded from `agent.yaml` (or `--config` path).
+//!
+//! Covers server URL, tenant, enrollment material paths, filesystem roots
+//! and exclusions, spool directory, capture size limits, and sensor toggles.
+//! Invalid config fails fast at process start — the agent does not run
+//! with partial silent defaults for security-sensitive fields.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

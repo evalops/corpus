@@ -1,6 +1,9 @@
 //! Human opinions on artifacts, separate from analyzer scores (spec 5.5).
-//! Append-only; current opinion = latest row. Every set is audited (24.3)
-//! and malicious/suspicious opinions fire trigger events.
+//!
+//! Analysts record verdicts (`malicious`, `suspicious`, `benign`, …) with
+//! optional notes. Opinions are first-class, tenant-scoped, and never
+//! overwritten by automated scores — automation may *suggest*, humans
+//! *decide*. History is preserved for audit.
 
 use crate::error::{Error, Result};
 use chrono::{DateTime, Utc};

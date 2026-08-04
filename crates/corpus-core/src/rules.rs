@@ -1,5 +1,17 @@
-//! Rule registry helpers: source parsing, compile validation, immutable
-//! bundle digests (spec 14.3-14.5).
+//! Rule source parsing, compile validation, and immutable bundle digests
+//! (spec 14.3–14.5).
+//!
+//! # Bundle immutability
+//!
+//! [`COMPILER_CONFIG`] is folded into every bundle digest together with
+//! rule sources. Bumping the config string or the YARA-X engine version
+//! (via `CORPUS_YARA_X_VERSION`) invalidates prior digests — that is
+//! intentional so scan caches cannot mix engines.
+//!
+//! # One rule per entry
+//!
+//! M0 accepts exactly one YARA `rule` per registry entry so the stable
+//! rule id is unambiguous. Multi-rule files are rejected at parse time.
 
 use crate::error::{Error, Result};
 use sha2::{Digest, Sha256};

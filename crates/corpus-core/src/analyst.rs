@@ -1,5 +1,15 @@
-//! Analyst surface: prevalence as a first-class signal, rarity search,
-//! and the dropper heuristic. All pure SQL over the occurrence ledger.
+//! Analyst surface: prevalence, rarity search, and related queries.
+//!
+//! # Prevalence
+//!
+//! How widely is a digest observed across hosts/agents within a tenant?
+//! Low prevalence + high severity is a classic investigation pivot.
+//!
+//! # Rarity
+//!
+//! Search for uncommon structural features (imports, section layouts)
+//! among committed artifacts. Backed by similarity features, not raw
+//! bytes.
 
 use crate::error::{Error, Result};
 use chrono::{DateTime, Utc};

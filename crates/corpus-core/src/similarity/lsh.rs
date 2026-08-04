@@ -1,9 +1,9 @@
-//! Banded LSH over ssdeep digests for fuzzy candidate generation.
+//! Banded LSH index over fuzzy digests for candidate generation.
 //!
-//! Each digest is split into fixed-width character n-grams; each n-gram is
-//! a band key. Artifacts that share any band key are candidates for the
-//! full ssdeep compare. This replaces a full per-class table scan when
-//! the LSH index is populated.
+//! Splits ssdeep-like digests into bands so approximate near-neighbors
+//! share at least one band key. Lookups are tenant- and version-scoped
+//! with a hard candidate cap. Cold indexes fall back to class scans in
+//! [`crate::similarity::edges`] without changing correctness.
 
 use crate::error::Result;
 use sqlx::PgPool;

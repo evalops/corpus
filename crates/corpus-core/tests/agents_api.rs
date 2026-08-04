@@ -1,5 +1,5 @@
-//! Integration test for the M1 agent endpoints against real PostgreSQL.
-//! Gated on CORPUS_TEST_DATABASE_URL like the M0 test; no-op without it.
+//! Integration tests for agent enrollment, heartbeat, and auth.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::dto::{
     AnnounceDisposition, AnnounceRequest, EnrollRequest, GapEvent, HeartbeatRequest, OccurrenceInfo,

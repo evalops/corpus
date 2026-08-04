@@ -1,9 +1,4 @@
-//! Authenticated agent ingest: bearer-authenticated announce/upload/
-//! finalize with server-enforced occurrence identity, 401 on bad tokens,
-//! and the unauthenticated dev path for `corpusctl import`.
-//!
-//! Spawns the real corpus-server binary against a scratch CAS and the
-//! test database. Gated on CORPUS_TEST_DATABASE_URL; no-op without it.
+//! HTTP tests for agent credential requirements on ingest routes.
 
 use corpus_core::dto::*;
 use corpus_core::{db, DEFAULT_TENANT};

@@ -1,4 +1,29 @@
 //! Single-node retro-hunt engine and forward coverage (spec 15).
+//!
+//! # Hunt lifecycle
+//!
+//! ```text
+//! DRAFT → QUEUED → PLANNED → RUNNING → COMPLETED
+//!                              └──────→ FAILED
+//! ```
+//!
+//! 1. [`create_hunt`] binds a published rule bundle.
+//! 2. Planning selects the artifact set (tenant watermark).
+//! 3. Execution scans each artifact with YARA-X, using the scan result
+//!    cache ([`crate::scan`]) keyed by `(artifact, bundle_digest, engine)`.
+//! 4. Matches become detection events and hunt-match rows.
+//!
+//! # Forward coverage
+//!
+//! Separately from retro-hunts, newly ingested artifacts are scanned
+//! against the **active** bundle so detection is continuous without a
+//! full corpus walk.
+//!
+//! # Single-node scope
+//!
+//! M0/M3 run hunts in-process on one server. Horizontal fan-out is a
+//! future concern; counters (`scanned`, `cache_hits`, `matched`, …) are
+//! maintained for operator progress UIs.
 
 use crate::cas::FsCas;
 use crate::dto::HuntResponse;
@@ -10,6 +35,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
+/// DB projection of a hunt including progress counters.
 pub struct HuntRow {
     pub id: Uuid,
     pub kind: String,
@@ -55,6 +81,7 @@ const HUNT_COLS: &str = "id, kind, bundle_id, bundle_digest, state, corpus_water
      planned_artifacts, scanned, cache_hits, matched, timed_out, failed,
      error, created_at, started_at, completed_at";
 
+/// Create a DRAFT retro-hunt bound to a published bundle digest.
 pub async fn create_hunt(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -77,6 +104,7 @@ pub async fn create_hunt(
     Ok(row.into_response())
 }
 
+/// Fetch hunt status counters for a tenant-scoped hunt id.
 pub async fn get_hunt(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid) -> Result<HuntResponse> {
     let row = sqlx::query_as::<_, HuntRow>(&format!(
         "SELECT {HUNT_COLS} FROM hunt WHERE tenant_id = $1 AND id = $2"
@@ -89,6 +117,7 @@ pub async fn get_hunt(pool: &PgPool, tenant_id: Uuid, hunt_id: Uuid) -> Result<H
     Ok(row.into_response())
 }
 
+/// List hunts for a tenant (newest first).
 pub async fn list_hunts(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<HuntResponse>> {
     let rows = sqlx::query_as::<_, HuntRow>(&format!(
         "SELECT {HUNT_COLS} FROM hunt WHERE tenant_id = $1 ORDER BY created_at"

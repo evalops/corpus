@@ -1,8 +1,17 @@
 //! Magic-byte classification of code-bearing artifacts.
 //!
-//! Extensions are hints, never authority (spec 2.3 / 10.6). The header
-//! bytes decide. M0 covers PE/COFF, ELF, Mach-O (thin and fat), and
-//! shebang scripts; everything else is `Unknown`.
+//! # Authority
+//!
+//! Extensions are hints, never authority (spec 2.3 / 10.6). Only the
+//! leading header bytes decide. M0 covers:
+//!
+//! - PE/COFF (`MZ` + PE signature)
+//! - ELF (`\x7fELF`)
+//! - Mach-O thin and fat (32/64-bit, LE/BE magics)
+//! - Shebang scripts (`#!`)
+//!
+//! Everything else is [`ArtifactClass::Unknown`]. Classification is pure
+//! and allocation-light so agents and the server share the same path.
 
 use serde::Serialize;
 use std::fmt;

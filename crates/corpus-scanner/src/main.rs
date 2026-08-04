@@ -1,9 +1,10 @@
-//! corpus-scanner: sandboxed scan worker (M6 hardening).
+//! corpus-scanner: out-of-process YARA-X helper.
 //!
-//! Reads a job JSON on stdin, scans the sample with the compiled bundle,
-//! and writes the outcome JSON on stdout. Intended to run under an OS
-//! sandbox (seatbelt/landlock/gVisor) with no network and a narrow
-//! filesystem view. See docs/hardening-decisions.md.
+//! Spawned by [`corpus_core::sandbox`] so rule evaluation cannot crash
+//! the API server. Speaks a minimal stdin/stdout protocol: receive scan
+//! job (rules + bytes/path), emit JSON match results or a structured
+//! error, exit. Resource limits are applied by the parent when the OS
+//! supports them.
 
 use serde::{Deserialize, Serialize};
 

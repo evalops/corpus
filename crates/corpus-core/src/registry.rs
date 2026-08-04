@@ -1,4 +1,14 @@
 //! Rule registry and immutable bundle publication (spec 14).
+//!
+//! # Lifecycle
+//!
+//! 1. Operators upsert individual rule sources (validated via [`crate::rules`]).
+//! 2. A **bundle** freezes a set of rules + compiler config into a digest.
+//! 3. One bundle may be **activated** for forward scans; retro-hunts pin
+//!    any historical digest.
+//!
+//! Bundles are content-addressed and never mutated in place. Activation
+//! is a pointer flip.
 
 use crate::dto::{BundleResponse, RuleResponse};
 use crate::error::{Error, Result};
@@ -8,6 +18,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 #[derive(Debug, sqlx::FromRow)]
+/// Stored rule source row with stable id and compile metadata.
 pub struct RuleRow {
     pub id: Uuid,
     pub namespace: String,
@@ -62,6 +73,7 @@ pub async fn create_rule(pool: &PgPool, tenant_id: Uuid, source: &str) -> Result
     Ok(row.into_response())
 }
 
+/// Fetch a rule by its stable name-derived id.
 pub async fn get_rule_by_stable_id(
     pool: &PgPool,
     tenant_id: Uuid,
@@ -77,6 +89,7 @@ pub async fn get_rule_by_stable_id(
     .await?)
 }
 
+/// List rules for a tenant.
 pub async fn list_rules(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<RuleResponse>> {
     let rows = sqlx::query_as::<_, RuleRow>(
         "SELECT id, namespace, stable_id, source, state, created_at
@@ -222,6 +235,7 @@ pub async fn publish_bundle(
 }
 
 #[derive(Debug, sqlx::FromRow)]
+/// Published bundle metadata including content digest.
 pub struct BundleRow {
     pub id: Uuid,
     pub digest: String,
@@ -246,6 +260,7 @@ impl BundleRow {
     }
 }
 
+/// Load bundle metadata by digest for a tenant.
 pub async fn get_bundle(pool: &PgPool, tenant_id: Uuid, digest: &str) -> Result<BundleResponse> {
     let row = sqlx::query_as::<_, BundleRow>(
         "SELECT b.id, b.digest, b.scope, b.engine_version, b.active,
@@ -261,6 +276,7 @@ pub async fn get_bundle(pool: &PgPool, tenant_id: Uuid, digest: &str) -> Result<
     Ok(row.into_response())
 }
 
+/// List published bundles for a tenant.
 pub async fn list_bundles(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<BundleResponse>> {
     let rows = sqlx::query_as::<_, BundleRow>(
         "SELECT b.id, b.digest, b.scope, b.engine_version, b.active,

@@ -1,8 +1,17 @@
-//! mTLS agent authentication (M6 hardening): per-deployment CA, signed
-//! agent client certs, rustls server config for the agent listener.
+//! mTLS agent authentication (M6 hardening).
 //!
-//! See docs/hardening-decisions.md for the design. The CA is generated on
-//! first run with a loud log line; `corpusctl ca init` prints its path.
+//! # Model
+//!
+//! Each deployment has a private CA under `CORPUS_CA_DIR`. Agents receive
+//! client certificates signed by that CA at enrollment. The server
+//! verifies the client cert chain and maps the cert identity to an agent
+//! row.
+//!
+//! # Non-goals
+//!
+//! - Public CA / ACME issuance
+//! - Mutual auth for admin API (separate shared-secret / loopback policy
+//!   in [`crate::auth`])
 
 use crate::error::{Error, Result};
 use std::path::{Path, PathBuf};

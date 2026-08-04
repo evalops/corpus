@@ -1,7 +1,9 @@
-//! Investigation / campaign report: one artifact (or hunt) → full picture
-//! for an analyst: detections, blast radius, variants, opinions, findings,
-//! and recommended actions. SOC-facing assemble over retained corpus
-//! evidence (API/CLI JSON, not a hosted investigation UI).
+//! Investigation / campaign report.
+//!
+//! Assembles one artifact (or hunt) into a full analyst picture:
+//! detections, opinions, prevalence, similarity neighborhood, detonation
+//! summaries, and timeline of occurrence events. Designed for a single
+//! API call that a UI or `corpusctl` can render without N+1 queries.
 
 use crate::dto::{InvestigationReport, RecommendedAction, SeveritySummary};
 use crate::error::{Error, Result};

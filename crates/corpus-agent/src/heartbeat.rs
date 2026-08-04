@@ -1,4 +1,8 @@
-//! Periodic health heartbeat (spec 10.11).
+//! Periodic agent heartbeat to the corpus server.
+//!
+//! Reports host name, agent version, boot id, and sequence high-water
+//! marks so operators can see coverage gaps when heartbeats stop or
+//! sequences stall.
 
 use crate::capture::AgentRuntime;
 use corpus_core::dto::HeartbeatRequest;

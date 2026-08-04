@@ -1,16 +1,8 @@
-//! Windows user-mode sensor (spec 10.10 Windows, M2 "user-mode fallback
-//! first"). Coverage gaps versus the future signed minifilter are
-//! documented in the README; the short version:
+//! ReadDirectoryChangesW sensor (Windows).
 //!
-//! - ReadDirectoryChangesW for close-write/rename-create events
-//!   (recursive watch on configured roots).
-//! - USN change journal for downtime recovery where privileges allow
-//!   (FSCTL_READ_JOURNAL requires volume read access; degrades to the
-//!   periodic reconciliation scanner without admin).
-//! - Process execution observation is NOT implemented in user mode:
-//!   Win32_ProcessStartTrace requires admin + COM/WMI plumbing; that
-//!   gap is documented and exec-priority candidates fall back to
-//!   write-priority.
+//! Directory watches for create/write/rename events on configured roots.
+//! Complements USN when journal access is restricted. Parsing lives in
+//! [`rdcw_parse`] for unit testing without Win32 APIs.
 
 #![cfg(target_os = "windows")]
 

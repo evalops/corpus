@@ -1,7 +1,15 @@
-//! Sandboxed scan execution (M6 hardening): the `corpus-scanner` helper
-//! runs as a subprocess under an OS sandbox — macOS seatbelt, Linux
-//! landlock (best-effort), or gVisor when configured. Tier 1 only is NOT
-//! a hostile-malware boundary; see docs/hardening-decisions.md.
+//! Sandboxed scan execution (M6 hardening).
+//!
+//! The `corpus-scanner` helper binary runs YARA-X in a separate process
+//! so a pathological rule or crafted sample cannot take down the API
+//! server. This module:
+//!
+//! - Spawns the helper with resource limits where available
+//! - Passes artifact bytes / paths over a narrow protocol
+//! - Maps helper exit codes to scan statuses
+//!
+//! When the helper is unavailable, deployments may fall back to in-process
+//! scan only if explicitly configured (dev mode).
 
 use crate::scan::ScanOutcome;
 use std::path::{Path, PathBuf};

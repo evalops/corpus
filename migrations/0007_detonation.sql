@@ -1,4 +1,6 @@
 -- Milestone M10: detonation findings (spec 13.4, 17.4).
+--
+-- External sandbox job records and behavioral result storage.
 
 -- Analyzer runs (spec 12.2 sketch; the table was deferred from the M0
 -- subset until the first producer — detonation — needed it).

@@ -1,6 +1,14 @@
-//! Stable read algorithm (spec 10.5): open without following symlinks,
-//! stream into the spool while hashing, re-stat, retry on mutation,
-//! terminal CHANGED_DURING_READ.
+//! Mutation-safe file reads into the local spool.
+//!
+//! # Algorithm
+//!
+//! 1. Open without following symlinks (platform-specific flags).
+//! 2. Snapshot size/mtime; copy to a private spool file while hashing.
+//! 3. Re-stat; if size/mtime changed, discard and retry.
+//! 4. Exhaust retries → [`StableReadError::ChangedDuringRead`].
+//!
+//! Rejects oversize files and full spools. Symlinks are not followed
+//! (TOCTOU / redirect hardening).
 
 use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;

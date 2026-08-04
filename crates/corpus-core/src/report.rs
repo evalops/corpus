@@ -1,8 +1,9 @@
-//! Blast-radius reporting (spec 17.1, M0 scope).
+//! Blast-radius reporting (spec 17.1).
 //!
-//! Historical observation only: the report joins hunt matches (or an exact
-//! hash) to occurrence events. Current-state verification (spec 17.2) is
-//! post-M0 and the report says so explicitly.
+//! Given a seed artifact (or hunt match set), compute the set of hosts,
+//! paths, and related artifacts in scope — the operational "how bad is
+//! this?" view. Reports are assembled from occurrences, edges, and group
+//! membership without shipping sample bytes to the client.
 
 use crate::dto::{BlastRadiusArtifact, BlastRadiusHost, BlastRadiusOccurrence, BlastRadiusReport};
 use crate::error::{Error, Result};

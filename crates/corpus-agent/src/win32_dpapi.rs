@@ -1,7 +1,7 @@
-//! DPAPI key wrapping for the agent spool key on Windows (spec 10.3).
-//! The 32-byte key is protected with CryptProtectData (CurrentUser scope)
-//! and stored as a blob in the state dir — the same pattern as the macOS
-//! Keychain and the Linux 0600 key file.
+//! Windows DPAPI helpers for spool key protection.
+//!
+//! Wraps machine/user-scoped DPAPI so spool encryption keys are not
+//! stored as plaintext on disk. Compiled only on `target_os = "windows"`.
 
 #![cfg(target_os = "windows")]
 

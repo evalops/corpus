@@ -1,5 +1,8 @@
-//! HTTP client for the server ingest/agent APIs. The server owns all
-//! writes; the agent reuses the M0 announce/upload/finalize flow.
+//! Announce / stage / finalize client for the corpus server.
+//!
+//! Implements the server ingest protocol with backoff, credential
+//! attachment (bearer or mTLS), and mapping of HTTP outcomes to local
+//! queue state transitions. Never invents artifact ids — digests only.
 
 use anyhow::{anyhow, Context, Result};
 use corpus_core::dto::*;

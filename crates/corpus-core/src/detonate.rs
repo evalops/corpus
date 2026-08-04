@@ -1,8 +1,12 @@
-//! Detonation adapter (M10): external sandbox submission behind a
-//! provider trait. We orchestrate; the sandbox detonates. Egress is
-//! off by default and explicitly declared (spec 20.6).
+//! Detonation adapter (M10).
 //!
-//! See docs/detonation-design.md.
+//! Submits samples to an external sandbox behind a narrow interface:
+//! enqueue → poll → store structured behavioral summary. The corpus
+//! never embeds a full sandbox; it records **results** (and optional
+//! evidence refs) keyed by artifact + sandbox profile.
+//!
+//! Sample bytes leave the corpus host only through the configured
+//! adapter; digests and job ids are what APIs return by default.
 
 use crate::error::{Error, Result};
 use chrono::Utc;

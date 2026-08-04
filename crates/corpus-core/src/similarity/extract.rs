@@ -1,6 +1,18 @@
-//! Similarity feature extraction (spec 16.2) via goblin. Formats that do
-//! not parse store nothing beyond byte-level features — never an error.
-//! Extractor versions are embedded in every stored feature row.
+//! Similarity feature extraction (spec 16.2) via goblin.
+//!
+//! # Features produced
+//!
+//! | Family | Examples |
+//! |--------|----------|
+//! | byte | ssdeep digest, size, Shannon entropy |
+//! | normalized | authentihash-like / content hashes ignoring volatile PE fields |
+//! | structural | section layout hash, import set, export set |
+//! | provenance | compiler / packer hints when recoverable |
+//!
+//! Formats that do not parse cleanly still yield byte-level features plus
+//! a `parse_limitation` note — extraction is best-effort, never fatal.
+//!
+//! Version string [`EXTRACTOR_VERSION`] is stored on every feature row.
 
 use sha2::{Digest, Sha256};
 

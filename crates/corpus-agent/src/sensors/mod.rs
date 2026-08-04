@@ -1,10 +1,15 @@
-//! Filesystem event sensors.
+//! Filesystem change sensors.
 //!
-//! Linux uses fanotify mount marks where privileges permit (spec 10.10);
-//! Windows uses ReadDirectoryChangesW plus USN journal recovery
-//! (user-mode fallback; a signed minifilter is the production design);
-//! every platform has the periodic reconciliation-scan fallback. Sensor
-//! queue loss is a coverage gap, never a silent miss (spec 2.2).
+//! Platform backends feed a common capture queue. Each sensor is
+//! observe-only: it records paths and reasons, never blocks writers.
+//!
+//! | Sensor | Platform | Source |
+//! |--------|----------|--------|
+//! | `usn` | Windows | NTFS USN journal |
+//! | `rdcw` | Windows | ReadDirectoryChangesW |
+//! | `fanotify` | Linux | fanotify mark events |
+//! | `poll` | portable | periodic re-scan fallback |
+//! | `ads` | Windows | alternate data stream hints |
 
 #[cfg(target_os = "windows")]
 pub mod ads;

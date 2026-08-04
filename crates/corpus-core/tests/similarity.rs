@@ -1,5 +1,5 @@
-//! Integration test for the M3a similarity pipeline against real
-//! PostgreSQL. Gated on CORPUS_TEST_DATABASE_URL; no-op without it.
+//! Integration tests for byte/normalized similarity edges and groups.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{AnnounceRequest, FinalizeRequest, OccurrenceInfo};

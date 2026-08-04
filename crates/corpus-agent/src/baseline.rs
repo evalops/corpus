@@ -1,9 +1,9 @@
-//! Checkpointed, resumable baseline inventory (spec 10.7).
+//! Initial and periodic filesystem baseline walks.
 //!
-//! Each watch root is walked top-level entry by top-level entry. Completed
-//! entries are checkpointed in SQLite; a restart skips them. Baseline
-//! candidates are enqueued at the lowest capture priority so live events
-//! always win the worker (spec 10.8).
+//! Walks configured roots, applies exclusion patterns, and enqueues
+//! new or content-changed files for capture. Supports resume across
+//! process restarts by persisting completed directory watermarks in
+//! local state.
 
 use crate::state::{priority, StateDb};
 use anyhow::Result;

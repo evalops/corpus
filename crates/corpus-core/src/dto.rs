@@ -1,4 +1,16 @@
-//! API request/response types shared by server and CLI.
+//! API request/response types shared by server, CLI, and agent.
+//!
+//! # Serde conventions
+//!
+//! - JSON field names are `snake_case`.
+//! - Timestamps are RFC 3339 via `chrono` + serde.
+//! - Digests are hex strings on the wire; server converts to `bytea`.
+//!
+//! # Ownership
+//!
+//! Types here are pure data — no DB or HTTP. `corpus-server` handlers
+//! deserialize into these structs; `corpusctl` / `corpus-agent` serialize
+//! them on the client side. Keep this module free of `sqlx` and `axum`.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
