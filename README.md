@@ -76,8 +76,18 @@ Details: [docs/deploy.md](docs/deploy.md), [docs/hardening-decisions.md](docs/ha
 
 ## Docs
 
+Start at **[docs/README.md](docs/README.md)** (read order: intent → architecture → invariants → data-model → deploy).
+
 | Doc | Contents |
 |---|---|
+| [docs/intent.md](docs/intent.md) | Problem, thesis, users, non-goals |
+| [docs/architecture.md](docs/architecture.md) | Processes, trust boundaries, planes, sequences |
+| [docs/invariants.md](docs/invariants.md) | Numbered guarantees + enforcing code |
+| [docs/data-model.md](docs/data-model.md) | Glossary, tables, relationships |
+| [docs/spec-map.md](docs/spec-map.md) | Spec section → implementation |
+| [docs/threat-model.md](docs/threat-model.md) | Assets, actors, residual risk |
+| [docs/runbooks.md](docs/runbooks.md) | Operator procedures |
+| [docs/adrs/](docs/adrs/) | Architecture decision records |
 | [docs/deploy.md](docs/deploy.md) | Env vars, auth policy, first hunt, gVisor, reverse proxy |
 | [docs/openapi.json](docs/openapi.json) | HTTP API (`GET /api/v1/openapi.json`) |
 | [docs/hardening-decisions.md](docs/hardening-decisions.md) | mTLS, spool crypto, sandbox research |

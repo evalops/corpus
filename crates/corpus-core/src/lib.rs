@@ -26,6 +26,13 @@
 //!
 //! [`ENGINE_VERSION`] is folded into rule-bundle digests so engine upgrades
 //! invalidate prior scan caches (spec 14 / 15.4).
+//!
+//! # Design docs (repo `docs/`)
+//!
+//! Product intent, system architecture, numbered invariants, data model,
+//! ADRs, and operator runbooks live under `docs/` (see `docs/README.md`).
+//! Module rustdoc explains local behavior; those pages explain cross-cutting
+//! why.
 
 pub mod agents;
 pub mod analyst;
