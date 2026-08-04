@@ -44,11 +44,19 @@ fn admin_token_gates_routes() {
         require_admin: true,
         allow_dev_ingest: false,
         mcp_token: "mcp-prod-secret".into(),
+        merlin_ingest_token: Some("merlin-service-secret".into()),
         listen_is_loopback: false,
     };
     assert!(cfg.check_admin(None).is_err());
     assert!(cfg.check_admin(Some("Bearer wrong")).is_err());
     assert!(cfg.check_admin(Some("Bearer test-admin-secret")).is_ok());
+    assert!(cfg
+        .check_merlin_ingest(Some("Bearer merlin-service-secret"))
+        .is_ok());
+    assert!(cfg
+        .check_merlin_ingest(Some("Bearer test-admin-secret"))
+        .is_ok());
+    assert!(cfg.check_merlin_ingest(Some("Bearer wrong")).is_err());
 }
 
 #[test]

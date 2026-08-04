@@ -17,6 +17,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "CORPUS_MCP_TOKEN"
+      },
+      "merlinBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "CORPUS_MERLIN_INGEST_TOKEN; narrow service token for Merlin telemetry"
       }
     },
     "parameters": {
@@ -93,6 +98,26 @@
       "post": {
         "summary": "Finalize upload into CAS",
         "responses": { "200": { "description": "Finalize response" } }
+      }
+    },
+    "/api/v1/integrations/merlin/segments": {
+      "post": {
+        "summary": "Ingest replay-safe raw Merlin telemetry",
+        "security": [{ "merlinBearer": [] }, { "adminBearer": [] }],
+        "parameters": [{ "$ref": "#/components/parameters/Tenant" }],
+        "responses": { "200": { "description": "Accepted and duplicate event counts" } }
+      }
+    },
+    "/api/v1/integrations/merlin/observations": {
+      "get": {
+        "summary": "List Merlin observations for enrichment",
+        "security": [{ "merlinBearer": [] }, { "adminBearer": [] }],
+        "parameters": [
+          { "$ref": "#/components/parameters/Tenant" },
+          { "name": "host", "in": "query", "schema": { "type": "string" } },
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 1000 } }
+        ],
+        "responses": { "200": { "description": "Merlin observation list" } }
       }
     },
     "/api/v1/rules": {

@@ -24,6 +24,10 @@ pub struct AuthConfig {
     pub allow_dev_ingest: bool,
     /// MCP bearer token (never the hardcoded default on non-loopback).
     pub mcp_token: String,
+    /// Narrow service token for the Merlin telemetry bridge. It is separate
+    /// from the admin token so a deployed sensor control plane cannot mutate
+    /// Corpus policy or hunts.
+    pub merlin_ingest_token: Option<String>,
     pub listen_is_loopback: bool,
 }
 
@@ -72,6 +76,11 @@ impl AuthConfig {
             ));
         }
 
+        let merlin_ingest_token = std::env::var("CORPUS_MERLIN_INGEST_TOKEN")
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+
         let allow_dev_ingest = listen_is_loopback
             && std::env::var("CORPUS_DENY_DEV_INGEST").is_err()
             && !require_admin;
@@ -90,6 +99,7 @@ impl AuthConfig {
             require_admin,
             allow_dev_ingest,
             mcp_token,
+            merlin_ingest_token,
             listen_is_loopback,
         })
     }
@@ -105,6 +115,26 @@ impl AuthConfig {
 
     pub fn mcp_matches(&self, provided: &str) -> bool {
         subtle_eq(self.mcp_token.as_bytes(), provided.as_bytes())
+    }
+
+    pub fn merlin_matches(&self, provided: &str) -> bool {
+        self.merlin_ingest_token
+            .as_deref()
+            .is_some_and(|expected| subtle_eq(expected.as_bytes(), provided.as_bytes()))
+    }
+
+    /// The bridge may use its narrow service token or an admin token during
+    /// local operations. Production deployments should use the former.
+    pub fn check_merlin_ingest(&self, authorization_header: Option<&str>) -> Result<()> {
+        let Some(token) = bearer_from_authorization(authorization_header) else {
+            return Err(Error::Unauthorized(
+                "Merlin bridge requires Authorization: Bearer <CORPUS_MERLIN_INGEST_TOKEN>".into(),
+            ));
+        };
+        if self.merlin_matches(token) || self.admin_matches(token) {
+            return Ok(());
+        }
+        Err(Error::Unauthorized("invalid Merlin bridge token".into()))
     }
 
     /// Require admin auth when `require_admin` is set.
@@ -179,6 +209,7 @@ mod tests {
             require_admin: true,
             allow_dev_ingest: false,
             mcp_token: "mcp".into(),
+            merlin_ingest_token: Some("merlin".into()),
             listen_is_loopback: false,
         };
         assert!(cfg.admin_matches("secret-token"));
