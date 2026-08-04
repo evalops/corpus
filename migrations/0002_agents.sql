@@ -1,12 +1,9 @@
 -- Milestone 1: agent enrollment, identity, and health (spec 10.1, 10.11).
--- Tenant-scoped like every other data table (0001 tenant registry).
---
--- Agent enrollment tokens, agent rows, heartbeats, and coverage gaps.
 
 -- One-time enrollment tokens minted by operators via corpusctl.
 CREATE TABLE enrollment_token (
   token_sha256        bytea PRIMARY KEY,
-  tenant_id           uuid NOT NULL REFERENCES tenant (id),
+  tenant_id           uuid NOT NULL,
   label               text NOT NULL DEFAULT '',
   created_at          timestamptz NOT NULL,
   expires_at          timestamptz,
@@ -18,7 +15,7 @@ CREATE TABLE enrollment_token (
 -- plaintext token is shown exactly once at enrollment.
 CREATE TABLE agent (
   id                  uuid PRIMARY KEY,
-  tenant_id           uuid NOT NULL REFERENCES tenant (id),
+  tenant_id           uuid NOT NULL,
   host_name           text NOT NULL,
   token_sha256        bytea NOT NULL,
   version             text NOT NULL,
