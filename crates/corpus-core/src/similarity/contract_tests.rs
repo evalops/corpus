@@ -1,7 +1,18 @@
 //! Malformed-binary contract tests for feature extraction and function
-//! boundary recovery. Every input must return a bounded result (features
-//! with optional limitation, or empty spans) without panicking or
-//! unbounded allocation.
+//! boundary recovery (issue #29).
+//!
+//! # Contract
+//!
+//! For every seed in the fuzz-smoke corpus (truncated headers, wrong
+//! magic, oversized section tables, random noise, …):
+//!
+//! 1. **No panic** — parsers must fail soft.
+//! 2. **Bounded output** — function spans ≤ [`MAX_FUNCTIONS`], feature
+//!    JSON summary ≤ 64 KiB.
+//! 3. **No amplification** — recovered code section bytes never exceed
+//!    the input length; span ranges stay inside the section.
+//!
+//! These tests run hermetically in CI (`cargo test`) without a database.
 
 use crate::classify;
 use crate::semantic::extract::{functions_for, MAX_FUNCTIONS};

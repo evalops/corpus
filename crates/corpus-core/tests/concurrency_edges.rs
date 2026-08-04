@@ -1,5 +1,14 @@
-//! Concurrency and idempotency tests for edge insertion and group union.
-//! Gated on CORPUS_TEST_DATABASE_URL.
+//! Concurrency and idempotency tests for edge insertion and group union
+//! (issue #31).
+//!
+//! # Properties under test
+//!
+//! - Concurrent `analyze_and_link` / edge inserts for the same pair do not
+//!   create duplicate edges (unique key + `ON CONFLICT DO NOTHING`).
+//! - Group union under concurrent strong edges remains a single coherent
+//!   partition (no torn membership).
+//!
+//! Gated on `CORPUS_TEST_DATABASE_URL` (no-op hermetic skip in CI).
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{AnnounceRequest, FinalizeRequest, OccurrenceInfo};

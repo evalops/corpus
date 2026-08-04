@@ -1,9 +1,53 @@
 //! Function-level candidate index for semantic similarity.
 //!
-//! Bands are derived from the first bytes of each function's packed token
-//! signature (and a secondary fold). Retrieval is tenant- and
-//! extractor-version-scoped with a hard candidate cap. Cold index falls
-//! back to a full tenant scan without changing correctness.
+//! # Problem
+//!
+//! Pairwise Jaccard over every function in a tenant is
+//! `O(artifacts × functions²)` and does not scale. We need a cheap
+//! *candidate generator* that recalls likely matches without missing
+//! correctness when the index is empty or cold.
+//!
+//! # Design (v1 bands)
+//!
+//! For each significant function we derive [`FUNC_BAND_COUNT`] (4)
+//! deterministic band keys from its sorted token-hash vector:
+//!
+//! | Band | Key material |
+//! |------|----------------|
+//! | 0 | first token hash (hex) |
+//! | 1 | last token hash (hex) |
+//! | 2 | XOR-fold of all hashes (hex) |
+//! | 3 | length bucket (`0..=3`) + mid hash |
+//!
+//! At query time we collect keys for the probe artifact's functions and
+//! look up other artifacts that share any key under the same
+//! `(tenant_id, version)`. Results are hard-capped at
+//! [`FUNC_CANDIDATE_CAP`] (256).
+//!
+//! This is **not** classical MinHash LSH with independent permutations;
+//! it is a lightweight, deterministic approximation tuned for recall of
+//! near-identical token sets (shared first/last tokens, similar length).
+//! False candidates are filtered by exact Jaccard + coverage later.
+//!
+//! # Cold index fallback
+//!
+//! When the table has no rows for the tenant/version, or a probe returns
+//! zero candidates, callers (`semantic::edges::analyze_and_link`) fall
+//! back to a full tenant scan of `similarity_function`. Correctness is
+//! unchanged; only latency differs. The cold path is recorded in edge
+//! evidence as `candidate_source`.
+//!
+//! # Isolation & versioning
+//!
+//! - All rows are tenant-scoped; there is no cross-tenant lookup.
+//! - `version` is the semantic extractor version (`semantic:v1`). A new
+//!   extractor does not collide with old bands.
+//! - Storage is replace-on-write per artifact (`DELETE` then `INSERT`) so
+//!   re-analysis does not leave stale bands.
+//!
+//! # Schema
+//!
+//! See `migrations/0011_function_lsh.sql` (`similarity_function_band`).
 
 use crate::error::Result;
 use crate::semantic::edges::{FunctionRow, SEMANTIC_EXTRACTOR_VERSION};
@@ -11,23 +55,32 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use uuid::Uuid;
 
+/// Number of band keys emitted per function.
 pub const FUNC_BAND_COUNT: usize = 4;
+
+/// Hard upper bound on candidate artifacts returned by [`candidates`].
+///
+/// Prevents a popular band key from exploding the pairwise scoring set.
 pub const FUNC_CANDIDATE_CAP: i64 = 256;
 
 /// Derive deterministic band keys from a function's token-hash signature.
+///
+/// Empty token sets produce no bands (nothing useful to index). Output
+/// order is stable: local band index `0..FUNC_BAND_COUNT`.
 pub fn function_bands(token_hashes: &[u64]) -> Vec<(i32, String)> {
     if token_hashes.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::with_capacity(FUNC_BAND_COUNT);
-    // Band 0: first token hash.
+    // Band 0: first token hash — identical function prologues collide.
     out.push((0, format!("{:016x}", token_hashes[0])));
-    // Band 1: last token hash.
+    // Band 1: last token hash — shared epilogues (returns, stack cleanup).
     out.push((1, format!("{:016x}", token_hashes[token_hashes.len() - 1])));
-    // Band 2: XOR fold of all hashes (quantized).
+    // Band 2: XOR fold of all hashes — coarse multiset fingerprint.
     let fold = token_hashes.iter().fold(0u64, |a, b| a ^ b);
     out.push((2, format!("{:016x}", fold)));
-    // Band 3: length bucket + mid hash.
+    // Band 3: length bucket + mid hash — similar-sized functions with a
+    // shared interior token. Buckets reduce cardinality for short vs long.
     let mid = token_hashes[token_hashes.len() / 2];
     let len_bucket = match token_hashes.len() {
         0..=4 => 0,
@@ -39,7 +92,12 @@ pub fn function_bands(token_hashes: &[u64]) -> Vec<(i32, String)> {
     out
 }
 
-/// Replace function-index bands for one artifact.
+/// Replace function-index bands for one artifact (idempotent re-analysis).
+///
+/// Deletes existing rows for `(tenant, artifact, version)` then inserts
+/// bands for every function. Global `band_idx` packs per-function local
+/// indices as `func_ordinal * FUNC_BAND_COUNT + local_idx` so the primary
+/// key stays unique without a separate function id column.
 pub async fn store_function_bands(
     pool: &PgPool,
     tenant: Uuid,
@@ -82,6 +140,8 @@ pub async fn store_function_bands(
 }
 
 /// True when the tenant has any function-index rows for this version.
+///
+/// Used by the analyze path to decide index vs cold full-scan.
 pub async fn index_populated(pool: &PgPool, tenant: Uuid, version: &str) -> Result<bool> {
     let exists: Option<(i32,)> = sqlx::query_as(
         "SELECT 1 FROM similarity_function_band
@@ -94,8 +154,13 @@ pub async fn index_populated(pool: &PgPool, tenant: Uuid, version: &str) -> Resu
     Ok(exists.is_some())
 }
 
-/// Candidate artifacts that share at least one function band.
-/// Returns empty when the index is cold (caller falls back).
+/// Candidate artifacts that share at least one function band with `artifact`.
+///
+/// Returns an empty vec when the index is cold or there is no band
+/// overlap — callers must fall back to a full scan for correctness.
+///
+/// Query keys use `band_idx % FUNC_BAND_COUNT` so storage's packed global
+/// indices still match the local band semantics used at query time.
 pub async fn candidates(
     pool: &PgPool,
     tenant: Uuid,
@@ -109,7 +174,7 @@ pub async fn candidates(
     let mut keys: HashSet<(i32, String)> = HashSet::new();
     for f in functions {
         for (idx, key) in function_bands(&f.token_hashes) {
-            // Query by band_key only (idx varies with packing); use key string.
+            // Normalize to local band index (0..FUNC_BAND_COUNT).
             keys.insert((idx % FUNC_BAND_COUNT as i32, key));
         }
     }
@@ -117,8 +182,9 @@ pub async fn candidates(
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for (band_mod, band_key) in keys {
-        // Match any band whose local index modulo FUNC_BAND_COUNT equals band_mod
-        // and whose key matches — approximate by key alone for simplicity.
+        // Match any stored band whose local index equals band_mod and
+        // whose key matches. LIMIT is applied per key; overall cap is
+        // enforced after dedup across keys.
         let rows: Vec<(Uuid,)> = sqlx::query_as(
             "SELECT DISTINCT artifact_id FROM similarity_function_band
              WHERE tenant_id = $1 AND version = $2 AND band_key = $3
@@ -144,6 +210,7 @@ pub async fn candidates(
             }
         }
     }
+    // Keep the extractor version symbol live for future version gates.
     let _ = SEMANTIC_EXTRACTOR_VERSION;
     Ok(out)
 }

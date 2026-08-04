@@ -1,8 +1,35 @@
 //! Content-addressed storage backends.
 //!
-//! `CasBackend` is the trait every storage implementation must satisfy.
-//! `FsCas` remains the default filesystem backend. A memory backend is
-//! provided for conformance tests.
+//! # Architecture
+//!
+//! [`CasBackend`] is the trait every storage implementation must satisfy.
+//! Ingest stages bytes under a transient key, verifies the client-declared
+//! digest ([`verify_digest`]), then commits to an immutable object key
+//! namespaced by tenant ([`object_key`]).
+//!
+//! | Backend | Use |
+//! |---------|-----|
+//! | [`FsCas`] | Default production filesystem layout under a root dir |
+//! | [`MemoryCas`] | Unit / conformance tests without disk |
+//!
+//! Existing call sites keep using inherent methods on [`FsCas`]; those
+//! forward to the trait so behavior stays single-sourced.
+//!
+//! # Invariants
+//!
+//! - **Put-if-absent:** concurrent commits of the same object key must not
+//!   corrupt data; identical bytes win, presence short-circuits.
+//! - **Staging hygiene:** `commit` / `discard_staging` remove staging keys.
+//! - **Authorization is caller's job:** the CAS layer does not interpret
+//!   tenant policy beyond the key layout; readers must check tenant first.
+//! - **Digest check is caller's job before commit:** backends store what
+//!   they are given; [`verify_digest`] is invoked by ingest, not by
+//!   `commit` itself (allows trust-boundary flexibility).
+//!
+//! # Conformance
+//!
+//! [`conformance_suite`] exercises stage → commit → read → range →
+//! metadata → put-if-absent → delete. Every new backend should pass it.
 
 use crate::error::{Error, Result};
 use crate::hash;
@@ -11,18 +38,25 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-/// Content-addressed store interface.
+/// Content-addressed store interface (`Send + Sync` for shared server state).
 ///
-/// Writes verify the declared digest before commit. Put-if-absent is safe
-/// under concurrent uploads (last writer with identical bytes wins).
+/// Writes are two-phase: [`CasBackend::stage`] then [`CasBackend::commit`].
+/// Put-if-absent is safe under concurrent uploads (last writer with
+/// identical bytes wins when the key already exists).
 pub trait CasBackend: Send + Sync {
     /// Stage raw bytes under a server-generated staging key.
+    ///
+    /// Staging keys must not contain path separators or `..` (enforced by
+    /// concrete backends).
     fn stage(&self, staging_key: &str, bytes: &[u8]) -> Result<()>;
 
     /// Move staged bytes to an immutable object key (create-if-absent).
+    ///
+    /// If the object already exists, staging is discarded and the call
+    /// succeeds without overwriting (content-addressed equality assumed).
     fn commit(&self, staging_key: &str, object_key: &str) -> Result<()>;
 
-    /// Discard a staging object if present.
+    /// Discard a staging object if present (no error if missing).
     fn discard_staging(&self, staging_key: &str);
 
     /// Read an object by key. Callers must authorize tenant access first.
@@ -32,6 +66,8 @@ pub trait CasBackend: Send + Sync {
     fn exists(&self, object_key: &str) -> Result<bool>;
 
     /// Optional range read; default materializes full object then slices.
+    ///
+    /// Out-of-range offsets return an empty vec (not an error).
     fn read_range(&self, object_key: &str, offset: u64, len: usize) -> Result<Vec<u8>> {
         let all = self.read(object_key)?;
         let start = offset as usize;
@@ -42,7 +78,9 @@ pub trait CasBackend: Send + Sync {
         Ok(all[start..end].to_vec())
     }
 
-    /// Metadata: (size_bytes, sha256_hex) if present.
+    /// Metadata: `(size_bytes, sha256_hex)` if present.
+    ///
+    /// Default implementation re-reads and hashes; backends may optimize.
     fn metadata(&self, object_key: &str) -> Result<Option<(u64, String)>> {
         if !self.exists(object_key)? {
             return Ok(None);
@@ -51,16 +89,21 @@ pub trait CasBackend: Send + Sync {
         Ok(Some((bytes.len() as u64, hash::sha256_hex(&bytes))))
     }
 
-    /// Delete or tombstone an object. Filesystem backend unlinks.
+    /// Delete or tombstone an object. Filesystem backend unlinks; missing
+    /// keys are not an error.
     fn delete(&self, object_key: &str) -> Result<()>;
 }
 
-/// Opaque object key under a per-tenant namespace.
+/// Opaque object key under a per-tenant namespace:
+/// `objects/{tenant_id}/{sha256_hex}`.
 pub fn object_key(tenant_id: Uuid, sha256_hex: &str) -> String {
     format!("objects/{tenant_id}/{sha256_hex}")
 }
 
 /// Verify that `bytes` match `declared_sha256_hex` before commit.
+///
+/// Returns [`Error::HashMismatch`] with both digests when they differ —
+/// callers should refuse the upload rather than store under the wrong key.
 pub fn verify_digest(bytes: &[u8], declared_sha256_hex: &str) -> Result<()> {
     let recomputed = hash::sha256_hex(bytes);
     if recomputed != declared_sha256_hex {
@@ -74,6 +117,14 @@ pub fn verify_digest(bytes: &[u8], declared_sha256_hex: &str) -> Result<()> {
 
 // ---------------- Filesystem backend ----------------
 
+/// Filesystem CAS rooted at a directory with `objects/` and `staging/` trees.
+///
+/// Layout:
+/// ```text
+/// {root}/
+///   staging/{staging_key}          # transient uploads
+///   objects/{tenant}/{sha256}      # immutable content
+/// ```
 pub struct FsCas {
     root: PathBuf,
 }
@@ -149,7 +200,7 @@ impl CasBackend for FsCas {
     }
 }
 
-// Keep inherent methods used by existing call sites.
+// Keep inherent methods used by existing call sites (pre-trait API).
 impl FsCas {
     pub fn stage(&self, staging_key: &str, bytes: &[u8]) -> Result<()> {
         CasBackend::stage(self, staging_key, bytes)
@@ -167,6 +218,9 @@ impl FsCas {
 
 // ---------------- In-memory backend (tests) ----------------
 
+/// Thread-safe in-memory CAS for tests and [`conformance_suite`].
+///
+/// Clone shares the same underlying maps via `Arc<Mutex<_>>`.
 #[derive(Default, Clone)]
 pub struct MemoryCas {
     inner: Arc<Mutex<MemoryInner>>,
@@ -229,7 +283,10 @@ impl CasBackend for MemoryCas {
     }
 }
 
-/// Conformance checks every backend must pass.
+/// Conformance checks every [`CasBackend`] implementation must pass.
+///
+/// Covers stage/commit/read, range, metadata, put-if-absent, and delete.
+/// Intended for unit tests of new backends — not a runtime health probe.
 pub fn conformance_suite(cas: &dyn CasBackend) -> Result<()> {
     let tenant = Uuid::from_u128(42);
     let payload = b"conformance-payload-v1";

@@ -1,8 +1,55 @@
 //! Artifact retention cleanup for similarity-derived rows.
 //!
-//! Removes or tombstones function rows, features, LSH bands, edges, and
-//! group membership for a deleted/expired artifact, then repairs variant
-//! groups deterministically.
+//! # When to call
+//!
+//! After an artifact is deleted or expires under retention policy, derived
+//! similarity state must not linger as orphan rows or ghost group
+//! memberships. [`cleanup_artifact`] enumerates (and optionally deletes)
+//! every similarity-owned row for one artifact inside a tenant.
+//!
+//! # What is cleaned
+//!
+//! | Table / family | Action |
+//! |----------------|--------|
+//! | `similarity_feature` | DELETE by artifact |
+//! | `similarity_function` | DELETE by artifact |
+//! | `similarity_function_band` | DELETE by artifact (best-effort) |
+//! | `similarity_edge` | DELETE where src or dst is the artifact |
+//! | `similarity_lsh_band` | DELETE (best-effort if table missing) |
+//! | `variant_group_member` | DELETE membership, then repair group |
+//! | `analysis_receipt` | DELETE (best-effort if table missing) |
+//!
+//! The artifact row itself and CAS object are **out of scope** — callers
+//! own primary retention.
+//!
+//! # Dry-run & legal hold
+//!
+//! - `dry_run = true` (API default): count only, no deletes, still returns
+//!   a report. Legal-hold artifacts also return counts-only.
+//! - Destructive cleanup refuses with `Error::Conflict` when
+//!   `artifact.provenance.legal_hold` is true.
+//!
+//! # Group repair
+//!
+//! Variant groups are partitions of size ≥ 2 linked by strong edges.
+//! After removing a member:
+//!
+//! - If **≥ 2** members remain → leave the group intact.
+//! - If **≤ 1** remains → dissolve the group (delete remaining membership
+//!   and the `variant_group` row). Singleton groups are not meaningful.
+//!
+//! # Audit
+//!
+//! Successful destructive cleanups insert a row into
+//! `similarity_cleanup_log` with the count JSON (see migration
+//! `0010_receipts_and_cleanup.sql`).
+//!
+//! # Idempotency
+//!
+//! Re-running cleanup after a successful delete yields zero counts and
+//! no group repair. Concurrent cleanups of different artifacts are
+//! independent; same-artifact concurrency may race on group repair and
+//! is acceptable (both converge on dissolved or multi-member).
 
 use crate::error::{Error, Result};
 use chrono::Utc;
@@ -10,37 +57,49 @@ use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Per-table deletion (or dry-run) counts for one cleanup pass.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct CleanupCounts {
     pub features: u64,
     pub functions: u64,
+    /// Edges incident on the artifact (either endpoint).
     pub edges: u64,
     pub lsh_bands: u64,
     pub group_memberships: u64,
     pub receipts: u64,
+    /// Groups whose membership changed but the group survived.
     pub groups_repaired: u64,
+    /// Groups dissolved because fewer than 2 members remained.
     pub groups_removed: u64,
 }
 
+/// Full cleanup outcome returned to API / CLI callers.
 #[derive(Debug, Clone, Serialize)]
 pub struct CleanupReport {
     pub tenant_id: Uuid,
     pub artifact_id: Uuid,
+    /// True when no deletes were performed (requested dry-run or legal hold).
     pub dry_run: bool,
+    /// True when the artifact is under legal hold.
     pub legal_hold: bool,
     pub counts: CleanupCounts,
     pub recorded_at: chrono::DateTime<Utc>,
 }
 
 /// Enumerate (and optionally delete) all similarity-derived rows for an
-/// artifact. When `dry_run` is true, only counts are returned.
+/// artifact.
+///
+/// When `dry_run` is true, only counts are returned. When the artifact is
+/// under legal hold, destructive cleanup is refused (unless dry-run).
 pub async fn cleanup_artifact(
     pool: &PgPool,
     tenant: Uuid,
     artifact: Uuid,
     dry_run: bool,
 ) -> Result<CleanupReport> {
-    // Legal hold: refuse destructive cleanup when the artifact is held.
+    // Legal hold is stored as a boolean under artifact.provenance JSON.
+    // COALESCE + subquery treats missing artifacts as not held so dry-run
+    // of unknown ids still returns zero counts rather than erroring here.
     let legal_hold: bool = sqlx::query_scalar(
         "SELECT COALESCE(
              (SELECT (provenance->>'legal_hold')::boolean
@@ -126,6 +185,7 @@ pub async fn cleanup_artifact(
         .bind(artifact)
         .execute(pool)
         .await?;
+    // Function-band table may not exist on older DBs; ignore errors.
     let _ = sqlx::query(
         "DELETE FROM similarity_function_band WHERE tenant_id = $1 AND artifact_id = $2",
     )
@@ -158,7 +218,7 @@ pub async fn cleanup_artifact(
         }
     }
 
-    // Audit row.
+    // Audit row for compliance / operator forensics.
     sqlx::query(
         "INSERT INTO similarity_cleanup_log (tenant_id, artifact_id, dry_run, counts, created_at)
          VALUES ($1,$2,false,$3,$4)",
@@ -228,8 +288,8 @@ async fn count(pool: &PgPool, sql: &str, tenant: Uuid, artifact: Uuid) -> Result
     Ok(n as u64)
 }
 
+/// LSH table may not exist on very old DBs; treat missing as zero.
 async fn count_lsh(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<u64> {
-    // LSH table may not exist on very old DBs; treat missing as zero.
     let res = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM similarity_lsh_band WHERE tenant_id = $1 AND artifact_id = $2",
     )

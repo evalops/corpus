@@ -1,4 +1,13 @@
 -- Analysis receipts (deterministic, no sample bytes) and similarity cleanup audit.
+--
+-- analysis_receipt
+--   Content-derived primary key `id` (see corpus_core::similarity::receipts::receipt_id).
+--   `body` is the full AnalysisReceipt JSON — digests, versions, counts, limitations.
+--   Never contains sample bytes. Upserts on re-analysis with the same identity.
+--
+-- similarity_cleanup_log
+--   Append-only audit of destructive cleanup_artifact runs (dry_run=false).
+--   `counts` mirrors CleanupCounts JSON for operator forensics / compliance.
 
 CREATE TABLE IF NOT EXISTS analysis_receipt (
   id                  text PRIMARY KEY,

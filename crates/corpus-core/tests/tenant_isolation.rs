@@ -1,5 +1,13 @@
-//! Tenant-isolation property tests for similarity and semantic indexes.
-//! Gated on CORPUS_TEST_DATABASE_URL.
+//! Tenant-isolation property tests for similarity and semantic indexes
+//! (issue #30).
+//!
+//! # Properties under test
+//!
+//! - Identical bytes committed under two tenants never produce cross-tenant
+//!   edges, LSH hits, or neighborhood nodes.
+//! - Function-band and feature lookups always filter by `tenant_id`.
+//!
+//! Gated on `CORPUS_TEST_DATABASE_URL` (no-op hermetic skip in CI).
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{AnnounceRequest, FinalizeRequest, OccurrenceInfo};

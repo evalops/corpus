@@ -259,12 +259,21 @@ enum IntelCmd {
     },
 }
 
+/// Similarity investigation commands (neighborhood, export, evidence, …).
+///
+/// These are thin HTTP clients over the corpus-server routes under
+/// `/api/v1/similarity/*` and `/api/v1/artifacts/*/…`. Core algorithms and
+/// bounds live in `corpus-core`; the CLI only shapes query strings.
 #[derive(Subcommand)]
 enum SimilarityCmd {
     /// Compute features + edges for artifacts that predate M3a.
     Backfill,
     /// Bounded neighborhood query around an artifact digest or id.
+    ///
+    /// Server clamps depth ≤ 4, nodes ≤ 256, edges ≤ 1024. Weak edges are
+    /// included unless `--no-weak`.
     Neighborhood {
+        /// Artifact UUID or hex sha256.
         seed: String,
         #[arg(long)]
         edge_types: Option<String>,
@@ -282,6 +291,9 @@ enum SimilarityCmd {
         no_weak: bool,
     },
     /// Export neighborhood or variant group as json|dot|graphml.
+    ///
+    /// Provide `--seed` for a neighborhood star, or `--group-id` for a
+    /// variant group member graph. JSON is the canonical format.
     Export {
         #[arg(long)]
         seed: Option<String>,
@@ -295,15 +307,21 @@ enum SimilarityCmd {
         max_nodes: usize,
     },
     /// Explainable function-pair evidence for a semantic edge.
+    ///
+    /// Recomputes one-to-one matching; returns offsets, scores, and token
+    /// hash prefixes only (no sample bytes).
     Evidence {
         artifact_a: Uuid,
         artifact_b: Uuid,
         #[arg(long, default_value = "32")]
         max_pairs: usize,
     },
-    /// List registered similarity/semantic analyzers.
+    /// List registered similarity/semantic analyzers (capability discovery).
     Analyzers,
     /// Dry-run or execute derived-row cleanup for one artifact.
+    ///
+    /// Default is dry-run. Pass `--execute --dry-run=false` to delete
+    /// features, functions, bands, edges, receipts, and repair groups.
     Cleanup {
         artifact_id: Uuid,
         #[arg(long, default_value = "true")]
