@@ -9,6 +9,12 @@ use serde::Serialize;
 
 pub const TRIAGE_VERSION: &str = "triage:v1";
 
+/// Section metadata: (name, raw bytes, is_executable, is_writable).
+pub type SectionMeta = (String, Vec<u8>, bool, bool);
+
+/// Parsed section list plus import count and overlay flag.
+type SectionsParse = (Vec<SectionMeta>, usize, bool);
+
 #[derive(Debug, Clone, Serialize)]
 pub struct TriageSignal {
     pub name: String,
@@ -32,7 +38,7 @@ pub struct TriageReport {
 pub fn triage(
     format: &str,
     whole: &[u8],
-    code_sections: &[(String, Vec<u8>, bool, bool)],
+    code_sections: &[SectionMeta],
     import_count: usize,
     has_overlay: bool,
 ) -> TriageReport {
@@ -161,10 +167,7 @@ fn find_bytes(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Collect PE/ELF section metadata for triage without full semantic extract.
-pub fn sections_from_bytes(
-    format: &str,
-    bytes: &[u8],
-) -> (Vec<(String, Vec<u8>, bool, bool)>, usize, bool) {
+pub fn sections_from_bytes(format: &str, bytes: &[u8]) -> SectionsParse {
     match format {
         "pe" => pe_sections(bytes),
         "elf" => elf_sections(bytes),
@@ -172,7 +175,7 @@ pub fn sections_from_bytes(
     }
 }
 
-fn pe_sections(bytes: &[u8]) -> (Vec<(String, Vec<u8>, bool, bool)>, usize, bool) {
+fn pe_sections(bytes: &[u8]) -> SectionsParse {
     let Ok(pe) = goblin::pe::PE::parse(bytes) else {
         return (Vec::new(), 0, false);
     };
@@ -200,7 +203,7 @@ fn pe_sections(bytes: &[u8]) -> (Vec<(String, Vec<u8>, bool, bool)>, usize, bool
     (secs, imports, overlay)
 }
 
-fn elf_sections(bytes: &[u8]) -> (Vec<(String, Vec<u8>, bool, bool)>, usize, bool) {
+fn elf_sections(bytes: &[u8]) -> SectionsParse {
     let Ok(elf) = goblin::elf::Elf::parse(bytes) else {
         return (Vec::new(), 0, false);
     };
@@ -234,8 +237,8 @@ mod tests {
             *b = ((i * 17 + 31) % 251) as u8;
         }
         // Boost entropy further
-        for i in 0..256 {
-            code[i] = i as u8;
+        for (i, b) in code.iter_mut().enumerate().take(256) {
+            *b = i as u8;
         }
         let report = triage(
             "pe",

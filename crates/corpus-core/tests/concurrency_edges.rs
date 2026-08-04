@@ -25,6 +25,7 @@ fn occ(agent: Uuid, boot: Uuid, seq: i64, path: &str, size: i64) -> OccurrenceIn
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn commit(
     pool: &sqlx::PgPool,
     cas: &FsCas,
