@@ -1,15 +1,7 @@
-//! Platform-free parser for the ReadDirectoryChangesW
-//! FILE_NOTIFY_INFORMATION record stream, factored out of the Windows
-//! watcher so it is unit-testable on every platform.
+//! Pure parsers for ReadDirectoryChangesW FILE_NOTIFY_INFORMATION buffers.
 //!
-//! M9 review fix: the previous parser copied each FILE_NOTIFY_INFORMATION
-//! out of the buffer with `read_unaligned` into a stack local and then
-//! dereferenced `info.FileName.as_ptr()` — but `FileName` is a
-//! variable-length `WCHAR[1]` trailing field, so the pointer referred to
-//! the one-element array in the stack copy and any filename longer than
-//! one UTF-16 unit read out of bounds. This parser never copies records:
-//! it validates each record against the buffer length and decodes the
-//! filename slice in place from the original bytes.
+//! Hardened against odd filename lengths, truncated records, and bogus
+//! `NextEntryOffset` chains so a malformed buffer cannot loop forever.
 
 /// One decoded change notification.
 #[derive(Debug, Clone, PartialEq, Eq)]

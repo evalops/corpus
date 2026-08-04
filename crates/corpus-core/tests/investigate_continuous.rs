@@ -1,5 +1,5 @@
-//! Continuous re-analysis + investigation report path.
-//! Gated on CORPUS_TEST_DATABASE_URL.
+//! Integration tests for investigation reports and continuous re-analysis.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::*;

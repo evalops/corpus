@@ -1,7 +1,8 @@
-//! Capture state machine driver (spec 10.4): OBSERVED -> DEBOUNCING ->
-//! OPENING -> COPYING_AND_HASHING -> HASHED -> ANNOUNCED -> DEDUP_HIT |
-//! UPLOAD_REQUIRED -> UPLOADING -> FINALIZING -> OCCURRENCE_QUEUED ->
-//! COMPLETE, or GAP_RECORDED with a spec 2.2 terminal outcome.
+//! Capture pipeline: dequeue work → stable read → spool → uploader handoff.
+//!
+//! Integrates spool pressure (defer without burning attempts), crash
+//! resume from intermediate states, and terminal outcomes that feed
+//! server-side `capture_attempt` records after upload.
 
 use crate::config::Config;
 use crate::stable_read::{self, StableReadError};

@@ -1,7 +1,5 @@
-//! End-to-end integration test against a real PostgreSQL and a tempfile CAS.
-//!
-//! Gated on CORPUS_TEST_DATABASE_URL (the demo script sets it); without it
-//! the test is a no-op so plain `cargo test` stays hermetic.
+//! Integration tests for announce/finalize and retro-hunt execution.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{

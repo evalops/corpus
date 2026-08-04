@@ -1,9 +1,21 @@
-//! corpus-agent: Linux user-mode collection agent (spec 10, M1).
+//! corpus-agent: endpoint collection agent (spec 10).
 //!
-//! Observe-only: the agent never blocks execution and never runs
-//! server-supplied commands. Local state is SQLite WAL; the spool is
-//! plaintext with 0600/0700 permissions (encryption is M1-production
-//! hardening — see README deviations).
+//! # Threat model / posture
+//!
+//! **Observe-only.** The agent never blocks process execution and never
+//! runs server-supplied commands. It discovers code-bearing files, stages
+//! them into a local spool, and uploads via the announce/finalize protocol.
+//!
+//! # Runtime loops
+//!
+//! 1. **Enrollment** — one-time credential / mTLS material
+//! 2. **Baseline** — walk configured roots; enqueue new/changed files
+//! 3. **Sensors** — platform change journals (USN, fanotify, RDCW, …)
+//! 4. **Capture** — stable read → spool → hash → uploader
+//! 5. **Heartbeat** — liveness + sequence high-water marks
+//!
+//! Local state is SQLite WAL ([`state`]). Spool encryption is platform-
+//! dependent ([`spool_crypto`], Windows DPAPI).
 
 mod baseline;
 mod capture;

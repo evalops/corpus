@@ -1,3 +1,18 @@
+//! Unified error type for corpus-core domain operations.
+//!
+//! Mapped by `corpus-server` into HTTP status codes:
+//!
+//! | Variant | Typical HTTP |
+//! |---------|--------------|
+//! | [`Error::NotFound`] | 404 |
+//! | [`Error::Conflict`] | 409 |
+//! | [`Error::Unauthorized`] | 401 |
+//! | [`Error::Forbidden`] | 403 |
+//! | [`Error::BadRequest`] / [`Error::HashMismatch`] | 400 |
+//! | [`Error::Db`] / [`Error::Io`] / … | 500 |
+//!
+//! Domain code returns [`Result`]; handlers convert via `AppError`.
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]

@@ -1,9 +1,13 @@
-//! Durable local state: SQLite in WAL mode (spec 10.3).
+//! Local durable agent state (SQLite WAL).
 //!
-//! Holds agent identity, the capture state machine rows, baseline
-//! checkpoints, pending gap batches, seen-file snapshots, and health
-//! counters. Transitions are transactional: a crash may repeat a
-//! transition but cannot silently drop it (spec 10.4).
+//! Tracks:
+//! - Enrollment identity and sequence counters (boot-scoped)
+//! - Capture queue with priority (executables over baseline bulk)
+//! - Per-path work state machine (enqueued → reading → uploaded / deferred)
+//! - Sensor cursors (USN journal id, fanotify marks, …)
+//!
+//! All transitions are transactional so a crash mid-capture resumes
+//! without double-burning attempts or losing the queue.
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};

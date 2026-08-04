@@ -1,6 +1,17 @@
-//! Autonomous detection events: first-class records when forward scans,
-//! hash intel, or retro-hunts surface matches. Feeds investigation reports
-//! and continuous re-analysis without requiring a prior external alert.
+//! Autonomous detection events.
+//!
+//! First-class records created when forward scans, hash intel, or
+//! retro-hunts surface matches. Feeds investigation reports and continuous
+//! re-analysis without requiring a prior external SIEM alert.
+//!
+//! # Design notes
+//!
+//! - [`record`] is **idempotent-tolerant**: duplicate inserts are allowed
+//!   as an audit trail; product UX de-dupes if needed.
+//! - `source` is a short machine tag (`yara_forward`, `hash_intel`,
+//!   `retro_hunt`, …).
+//! - `mitre_techniques` stores ATT&CK technique ids when known.
+//! - Always tenant-scoped via `tenant_id` + `artifact_id`.
 
 use crate::error::Result;
 use chrono::Utc;

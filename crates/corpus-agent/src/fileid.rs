@@ -1,10 +1,8 @@
-//! Cross-platform file identity (spec 10.5 step 1): the OS-stable
-//! identity of a file for mutation detection during stable reads.
+//! Stable file identity for change detection.
 //!
-//! Unix: (dev, inode, size, mtime, ctime). Windows: (volume serial
-//! number, file index, size, mtime) via GetFileInformationByHandle,
-//! surfaced by std::os::windows::fs::MetadataExt. Windows has no ctime
-//! analog, so it is zeroed there.
+//! Combines filesystem identifiers (inode/device or Windows file id) with
+//! size/mtime so baseline and sensors can distinguish rewrite vs rename
+//! without reading file bytes on every tick.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FileKey {

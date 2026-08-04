@@ -1,8 +1,26 @@
 //! Candidate generation, typed edge insertion, and variant-group
-//! maintenance.
+//! maintenance (byte / normalized / provenance layer).
+//!
+//! # Relationship to semantic edges
+//!
+//! Function-level matching lives in [`crate::semantic::edges`]. This
+//! module handles:
+//!
+//! - Feature extraction persist ([`crate::similarity::extract`])
+//! - Exact / normalized / byte-similar / shared-provenance edges
+//! - LSH candidate generation with cold full-scan fallback
+//! - Variant-group union for strong edges ([`merges_groups`])
+//!
+//! # Candidate strategy
 //!
 //! Byte-similar candidates use the banded LSH index when populated;
-//! otherwise they fall back to a format-class scan (small tenants).
+//! otherwise they fall back to a format-class scan (acceptable for small
+//! tenants). All paths remain tenant-scoped.
+//!
+//! # Idempotency
+//!
+//! Edges insert with `ON CONFLICT DO NOTHING` on the canonical key
+//! `(tenant, src, dst, edge_type, model_version)` where `src < dst`.
 
 use crate::cas::FsCas;
 use crate::error::Result;
@@ -15,6 +33,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
+/// Persisted typed similarity edge with score and evidence JSON.
 pub struct EdgeRow {
     pub src_artifact: Uuid,
     pub dst_artifact: Uuid,

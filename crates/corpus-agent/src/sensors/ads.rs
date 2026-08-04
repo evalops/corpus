@@ -1,7 +1,7 @@
-//! Alternate data stream (ADS) awareness at the enumeration/metadata
-//! level (spec 10.10 Windows). Streams other than the default `::$DATA`
-//! are recorded as capture metadata; content collection of ADS is
-//! policy-controlled and not in M2 scope.
+//! Windows Alternate Data Stream (ADS) discovery hints.
+//!
+//! Surfaces non-default streams on NTFS that may hide payloads. Does not
+//! execute stream content; enqueues for capture like any other path.
 
 #![cfg(target_os = "windows")]
 

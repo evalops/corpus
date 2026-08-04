@@ -1,6 +1,21 @@
-//! Function boundary recovery for x86-64 PE/ELF/Mach-O (spec 16.2
-//! semantic similarity). Order: sized symbols, PE .pdata, prologue
-//! scan. Bounded to MAX_FUNCTIONS with a minimum gap.
+//! Function boundary recovery for x86-64 PE/ELF/Mach-O (spec 16.2).
+//!
+//! # Approach
+//!
+//! 1. Map executable sections from the container format (goblin).
+//! 2. Discover likely function starts (symbols, exports, call targets,
+//!    and heuristic prologues).
+//! 3. Emit bounded spans (`offset`, `size`, optional `name`) plus the
+//!    raw code bytes for feature extraction.
+//!
+//! # Bounds
+//!
+//! [`MAX_FUNCTIONS`] caps recovered spans so malformed binaries cannot
+//! explode memory. Decode is x86-64 only today (AArch64 is issue #18).
+//!
+//! # Non-goals
+//!
+//! Full decompiler CFG, unwind-aware boundaries, or non-x86 ISAs.
 
 pub const MAX_FUNCTIONS: usize = 512;
 pub const MIN_FUNCTION_GAP: usize = 8;

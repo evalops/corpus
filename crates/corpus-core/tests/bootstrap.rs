@@ -1,6 +1,5 @@
-//! Integration test for the M4 vault-bootstrap features against real
-//! PostgreSQL plus in-process mock servers (OCI registry, TAXII).
-//! Gated on CORPUS_TEST_DATABASE_URL; no-op without it.
+//! End-to-end bootstrap: tenant, ingest, rules, hunt, similarity smoke.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{AnnounceRequest, FinalizeRequest, OccurrenceInfo};

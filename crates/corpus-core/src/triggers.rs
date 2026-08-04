@@ -1,6 +1,14 @@
-//! Triggers: exactly three conditions (hunt_match, malicious_verdict,
-//! variant_join), HMAC-signed webhook delivery via a database outbox
-//! polled by the server. No general event system.
+//! Outbound triggers for high-signal events.
+//!
+//! Exactly three condition classes fire triggers:
+//!
+//! 1. **hunt_match** — a retro or forward scan matched
+//! 2. **malicious_verdict** — an opinion or analyzer verdict flipped bad
+//! 3. **detection_event** — an autonomous detection was recorded
+//!
+//! Actions are HMAC-signed webhooks (or future ticket sinks). Secrets stay
+//! server-side; payloads never include sample bytes — digests and metadata
+//! only.
 
 use crate::error::{Error, Result};
 use chrono::Utc;

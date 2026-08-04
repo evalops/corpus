@@ -1,5 +1,30 @@
 //! Announce-before-upload protocol and two-phase artifact commit
-//! (spec 11.1, 11.2). The server owns every write.
+//! (spec 11.1, 11.2).
+//!
+//! # Protocol
+//!
+//! ```text
+//! client                         server
+//!   │  POST /announce {sha256, size, occurrence?}
+//!   │ ─────────────────────────────►│
+//!   │  {disposition, upload_id?}    │  dedupe by tenant+sha256
+//!   │ ◄─────────────────────────────│
+//!   │  PUT staging bytes (if needed)│
+//!   │ ─────────────────────────────►│
+//!   │  POST /finalize {upload_id, …}│  verify hash, commit CAS,
+//!   │ ◄─────────────────────────────│  insert artifact + occurrence
+//! ```
+//!
+//! # Outcomes
+//!
+//! Capture attempts record [`OUTCOME_CAPTURED`], [`OUTCOME_ALREADY_PRESENT`],
+//! or [`OUTCOME_HASH_MISMATCH`]. Occurrence events are idempotent on
+//! `(tenant, agent_id, boot_id, agent_sequence)`.
+//!
+//! # Write ownership
+//!
+//! The server owns every durable write (Postgres + CAS). Agents never
+//! invent artifact ids; they only supply digests and occurrence metadata.
 
 use crate::cas::FsCas;
 use crate::classify;
@@ -13,8 +38,11 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Terminal capture_attempt outcome: bytes committed under announced digest.
 pub const OUTCOME_CAPTURED: &str = "CAPTURED";
+/// Terminal outcome: tenant already held this sha256 (dedupe short-circuit).
 pub const OUTCOME_ALREADY_PRESENT: &str = "ALREADY_PRESENT";
+/// Terminal outcome: recomputed sha256 ≠ announced; upload rejected.
 pub const OUTCOME_HASH_MISMATCH: &str = "HASH_MISMATCH";
 
 struct OccurrenceInsert<'a> {

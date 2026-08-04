@@ -1,12 +1,26 @@
-//! corpus-server: axum REST API owning all writes.
+//! # corpus-server
 //!
-//! Dev profile: filesystem CAS + PostgreSQL via Docker Compose. Tenants are
-//! first-class rows; `X-Corpus-Tenant` accepts a UUID or slug and defaults
-//! to the seeded `default` tenant when omitted.
+//! HTTP API process for the corpus platform. Owns all durable writes
+//! (Postgres + CAS) and exposes:
 //!
-//! Admin auth: see `corpus_core::auth`. Non-loopback binds require
-//! `CORPUS_ADMIN_TOKEN`. Hunts enqueue async by default; pass `?sync=1`
-//! to run in-request.
+//! - **Ingest** — announce / upload / finalize for agents and CLI
+//! - **Agents** — enrollment, heartbeat, gaps, mTLS
+//! - **Rules & hunts** — registry, bundles, retro/forward scan
+//! - **Similarity** — neighborhood, export, evidence, analyzers, cleanup
+//! - **Analyst** — prevalence, investigation, opinions, intel
+//! - **Integrations** — Merlin, OCI, detonation adapters
+//!
+//! # Auth surfaces
+//!
+//! | Traffic | Mechanism |
+//! |---------|-----------|
+//! | Admin / corpusctl | shared secret + listen-address policy ([`corpus_core::auth`]) |
+//! | Agents | enrollment token → bearer or mTLS ([`corpus_core::agents`], [`corpus_core::mtls`]) |
+//!
+//! Tenant resolution uses `X-Corpus-Tenant` (slug or uuid), defaulting to
+//! the well-known default tenant.
+//!
+//! Handlers stay thin: parse → authorize → call `corpus_core` → map errors.
 
 use axum::body::Bytes;
 use axum::extract::{Path, Query, Request, State};

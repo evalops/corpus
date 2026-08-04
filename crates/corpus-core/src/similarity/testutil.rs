@@ -1,6 +1,8 @@
-//! Test fixture builders: minimal but parseable PE and ELF binaries with
-//! crafted imports/notes. Used by unit tests and the similarity
-//! integration test. Not production code.
+//! Test fixture builders: minimal but parseable PE and ELF binaries.
+//!
+//! Used by unit and integration tests that need realistic goblin parse
+//! trees (imports, sections, machine type) without checking in large
+//! binaries. Fixtures are deterministic byte-for-byte across runs.
 
 #![doc(hidden)]
 

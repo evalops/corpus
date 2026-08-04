@@ -1,5 +1,5 @@
-//! Merlin bridge persistence and replay semantics.
-//! Gated on CORPUS_TEST_DATABASE_URL; no-op without it.
+//! Integration tests for Merlin observation ingest and listing.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::dto::MerlinSegmentRequest;
 use corpus_core::{db, merlin, tenant};

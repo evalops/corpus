@@ -1,11 +1,14 @@
 //! Merlin telemetry bridge.
 //!
-//! Merlin owns endpoint collection and its raw segment spool. Corpus keeps a
-//! tenant-scoped, queryable copy of the identity-bearing events so process
-//! evidence can be joined with verified artifact bytes, hunts, and reports.
-//! This path intentionally stores telemetry separately from the artifact
-//! occurrence ledger: an event is evidence, not proof that a file was
-//! captured or that a path still resolves to the same bytes.
+//! Ingests Merlin observation/segment payloads and stores them as
+//! tenant-scoped rows for correlation with corpus artifacts (e.g. by
+//! path, hash, or host). This is an integration surface — not a
+//! replacement for the endpoint agent.
+//!
+//! # Safety
+//!
+//! Payloads are treated as untrusted input: size-bounded, validated, and
+//! never executed. Cross-linking to artifacts is best-effort by digest.
 
 use crate::dto::{MerlinObservationView, MerlinSegmentRequest, MerlinSegmentResponse};
 use crate::error::{Error, Result};

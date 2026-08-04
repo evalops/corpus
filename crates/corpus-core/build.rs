@@ -1,3 +1,6 @@
+// Build script: expose the linked yara-x crate version as CORPUS_YARA_X_VERSION
+// so runtime digests and ENGINE_VERSION stay honest about the scanner engine.
+
 //! Build-time capture of the yara-x engine version so scan cache keys and
 //! hunt results can name the exact engine that produced them (invariant #7).
 

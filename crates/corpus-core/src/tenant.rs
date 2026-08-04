@@ -1,8 +1,13 @@
 //! First-class multi-tenant registry.
 //!
-//! Every write path resolves an active tenant before touching tenant-scoped
-//! tables. The well-known default tenant (`DEFAULT_TENANT` / slug `default`)
-//! is seeded by migration and used when the client omits `X-Corpus-Tenant`.
+//! Every durable row is scoped by `tenant_id`. This module:
+//!
+//! - Resolves slug → id for `X-Corpus-Tenant` headers
+//! - Ensures tenants exist (bootstrap / admin create)
+//! - Validates slug format (lowercase, URL-safe)
+//!
+//! The well-known [`crate::DEFAULT_TENANT`] (`slug = default`) is seeded
+//! by migration and used when no header is present.
 
 use crate::dto::{TenantCreateRequest, TenantResponse};
 use crate::error::{Error, Result};
@@ -84,6 +89,7 @@ pub async fn create_tenant(pool: &PgPool, req: &TenantCreateRequest) -> Result<T
     Ok(row.into_response())
 }
 
+/// List all tenants (admin).
 pub async fn list_tenants(pool: &PgPool) -> Result<Vec<TenantResponse>> {
     let rows = sqlx::query_as::<_, TenantRow>(
         "SELECT id, slug, name, status, created_at FROM tenant ORDER BY created_at, slug",
@@ -93,6 +99,7 @@ pub async fn list_tenants(pool: &PgPool) -> Result<Vec<TenantResponse>> {
     Ok(rows.into_iter().map(TenantRow::into_response).collect())
 }
 
+/// Fetch tenant by uuid.
 pub async fn get_tenant(pool: &PgPool, id: Uuid) -> Result<TenantResponse> {
     let row = sqlx::query_as::<_, TenantRow>(
         "SELECT id, slug, name, status, created_at FROM tenant WHERE id = $1",
@@ -104,6 +111,7 @@ pub async fn get_tenant(pool: &PgPool, id: Uuid) -> Result<TenantResponse> {
     Ok(row.into_response())
 }
 
+/// Fetch tenant by slug.
 pub async fn get_tenant_by_slug(pool: &PgPool, slug: &str) -> Result<TenantResponse> {
     let row = sqlx::query_as::<_, TenantRow>(
         "SELECT id, slug, name, status, created_at FROM tenant WHERE slug = $1",

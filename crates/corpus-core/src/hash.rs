@@ -1,3 +1,15 @@
+//! Cryptographic digests for artifact identity.
+//!
+//! # Core invariant #1
+//!
+//! SHA-256 of the **uploaded bytes** is the authoritative artifact id
+//! (spec §3). Client-supplied digests are hints only. [`verify_upload`]
+//! recomputes on the server and rejects mismatches with
+//! [`crate::error::Error::HashMismatch`].
+//!
+//! Helpers return either hex strings (API-facing) or raw 32-byte digests
+//! (Postgres `bytea` columns).
+
 use sha2::{Digest, Sha256};
 
 /// SHA-256 is the authoritative artifact identity (spec section 3).
@@ -5,10 +17,12 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
+/// SHA-256 digest as 32 raw bytes (Postgres `bytea`).
 pub fn sha256_raw(bytes: &[u8]) -> Vec<u8> {
     Sha256::digest(bytes).to_vec()
 }
 
+/// Decode a hex string to bytes; used for request path digests.
 pub fn hex_to_raw(s: &str) -> Result<Vec<u8>, hex::FromHexError> {
     hex::decode(s)
 }

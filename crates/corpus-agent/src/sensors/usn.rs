@@ -1,16 +1,9 @@
-//! USN change journal support (spec 10.10 Windows): downtime recovery
-//! via FSCTL_READ_JOURNAL where privileges allow. The record parser, the
-//! journal-info parser, and the cursor/resume decision logic are
-//! platform-free and unit-tested; the readers are Windows-only and degrade
-//! gracefully to the poll sensor without volume access.
+//! NTFS USN journal sensor (Windows).
 //!
-//! Cursor continuity (M9 review fix): FSCTL_READ_JOURNAL requires the
-//! UsnJournalId of the CURRENT journal instance (queried via
-//! FSCTL_QUERY_USN_JOURNAL), and the agent persists (journal_id,
-//! next_usn) in its SQLite state so a restart resumes where it stopped
-//! instead of re-reading from USN 0. Journal recreation (ID mismatch) or
-//! a cursor older than the journal's first available record (truncation)
-//! means continuity is lost: a full reconciliation is forced.
+//! Resumes from a persisted (journal_id, next_usn) cursor. Journal id
+//! mismatch forces full reconciliation. Parses packed USN_RECORD
+//! structures including long filenames; truncated buffers yield partial
+//! progress without panic.
 
 use serde::Serialize;
 

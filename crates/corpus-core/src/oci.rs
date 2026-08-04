@@ -1,6 +1,14 @@
-//! OCI image ingestion (M4 vault bootstrap): registry HTTP API client
-//! (no docker dependency), layer tar.gz walking, and `docker save`
-//! offline import.
+//! OCI image ingestion (M4 vault bootstrap).
+//!
+//! Pulls container images via the registry HTTP API, unpacks layers, and
+//! commits discovered code-bearing blobs into the corpus through the
+//! normal announce/finalize path. Each blob retains provenance pointing
+//! at the image reference and layer digest.
+//!
+//! # Non-goals
+//!
+//! - Full SBOM / image signature verification (future)
+//! - Running containers — this is acquisition only
 
 use crate::error::{Error, Result};
 use std::io::Read;

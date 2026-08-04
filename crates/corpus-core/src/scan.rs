@@ -1,4 +1,15 @@
 //! YARA-X scanning and the scan result cache key (spec 15.4).
+//!
+//! # Cache identity
+//!
+//! Results are cached by `(artifact_sha256, bundle_digest, engine_version)`.
+//! Any change to rules, compiler config, or engine invalidates prior
+//! entries via a new bundle digest (see [`crate::rules`]).
+//!
+//! # Statuses
+//!
+//! Scans complete as match / no-match / timed-out / failed. Timeouts and
+//! failures are first-class so hunts can continue past poison artifacts.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -10,6 +21,7 @@ use uuid::Uuid;
 pub const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 const SCAN_CONFIG: &str = "corpus-scan-config:v1:timeout_ms=10000:max_match_evidence=64";
 
+/// Digest of scan configuration folded into cache keys.
 pub fn scan_config_digest() -> String {
     hex::encode(Sha256::digest(SCAN_CONFIG.as_bytes()))
 }
@@ -17,6 +29,7 @@ pub fn scan_config_digest() -> String {
 /// The five-field scan cache key (spec 15.4). Field order here is the
 /// canonical order used in queries and tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Identity of a cached scan result (artifact × bundle × engine).
 pub struct ScanCacheKey {
     pub tenant_id: Uuid,
     pub artifact_sha256: Vec<u8>,
@@ -48,6 +61,7 @@ impl ScanCacheKey {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// One matched pattern string offset range from a rule.
 pub struct PatternEvidence {
     pub identifier: String,
     pub offset: u64,
@@ -55,6 +69,7 @@ pub struct PatternEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Structured match detail for a single rule hit.
 pub struct RuleMatchEvidence {
     pub rule_id: String,
     pub namespace: String,
@@ -62,6 +77,7 @@ pub struct RuleMatchEvidence {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Terminal status of a scan attempt (match / clean / timeout / error).
 pub enum ScanStatus {
     Clean,
     Matched,
@@ -80,6 +96,7 @@ impl ScanStatus {
     }
 }
 
+/// Full scan result: status, matches, and timing metadata.
 pub struct ScanOutcome {
     pub status: ScanStatus,
     pub matches: Vec<RuleMatchEvidence>,

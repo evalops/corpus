@@ -1,9 +1,13 @@
-//! Continuous re-analysis: when new intelligence arrives (activated bundle,
-//! hash intel), re-examine retained history automatically.
+//! Continuous re-analysis.
 //!
-//! Controlled by env:
-//! - `CORPUS_AUTO_RETRO_ON_ACTIVATE` — default **on**. Set to `0`/`false` to disable.
-//! - `CORPUS_AUTO_HASH_INTEL` — default **on**. Exact-hash hunt on sha256 IOCs.
+//! When new intelligence arrives — an activated rule bundle, new hash
+//! intel, or model/extractor upgrade — already-committed artifacts may
+//! need another pass without a full manual retro-hunt.
+//!
+//! This module queues and tracks re-analysis work items per tenant,
+//! records outcomes, and integrates with detection / investigation
+//! surfaces. It is intentionally separate from one-shot retro-hunts so
+//! operators can reason about "always-on" vs "point-in-time" coverage.
 
 use crate::error::Result;
 use crate::hunts;

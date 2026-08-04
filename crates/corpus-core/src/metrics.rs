@@ -1,4 +1,12 @@
 //! Platform metrics for ops dashboards and health beyond liveness.
+//!
+//! [`platform_metrics`] aggregates counts of committed artifacts,
+//! occurrences, hunts, jobs, detections, bundles, agents, and continuous
+//! re-analysis work. When `tenant_id` is `None`, results span all tenants
+//! (admin view); otherwise they are tenant-scoped.
+//!
+//! These are SQL `COUNT(*)` snapshots — not time-series. Wire them into
+//! Prometheus/Grafana via the server's `/metrics` or admin JSON endpoint.
 
 use crate::dto::PlatformMetrics;
 use crate::error::Result;

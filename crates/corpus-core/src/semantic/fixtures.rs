@@ -1,6 +1,19 @@
-//! Validation corpus for semantic similarity (spec 16.7/28.5): fixtures
-//! are compiled at test/demo time with cc — never committed binaries.
-//! x86-64 Mach-O on macOS, x86-64 ELF on Linux.
+//! Validation corpus for semantic similarity (spec 16.7 / 28.5).
+//!
+//! # Why compile at test time
+//!
+//! Fixtures are **C sources**, not committed binaries. Tests invoke the
+//! host `cc` to produce x86-64 ELF (Linux) or Mach-O (macOS) so the
+//! semantic extractor sees real instruction streams. If `cc` is missing,
+//! [`compile_fixture`] returns false and tests skip.
+//!
+//! # Fixture roles
+//!
+//! | Source | Role |
+//! |--------|------|
+//! | [`BASE_SOURCE`] | Multi-function program with stable structure |
+//! | [`TWEAK_SOURCE`] | Near-variant (one function changed) |
+//! | [`UNRELATED_SOURCE`] | Negative control |
 
 /// C source for the "base" program: several non-trivial functions that
 /// hold structural shape across optimization levels.

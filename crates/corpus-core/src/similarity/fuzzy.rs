@@ -1,9 +1,11 @@
-//! ssdeep-compatible fuzzy hashing, ported from the pure-Python ppdeep
-//! reference (itself a SpamSum port). Digests match ppdeep exactly, which
-//! is what the known-vector tests assert. ~200 lines, no C bindings.
+//! ssdeep-compatible fuzzy hashing.
 //!
-//! Byte fuzzy hashes are candidate generators only — never sufficient
-//! family evidence alone (spec 16.2).
+//! Ported from the pure-Python **ppdeep** reference so digests and
+//! comparison scores interoperate with common ssdeep tooling. Used for
+//! `byte_similar` lead edges (never group-merging by itself — spec 28.5).
+//!
+//! Comparison returns a 0–100 score; the model threshold is
+//! [`crate::similarity::model::MODEL_V1::byte_similar_min_score`].
 
 const BLOCKSIZE_MIN: u32 = 3;
 const SPAMSUM_LENGTH: usize = 64;

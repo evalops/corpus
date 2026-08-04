@@ -1,5 +1,5 @@
-//! Integration test for the M5 analyst surface against real PostgreSQL.
-//! Gated on CORPUS_TEST_DATABASE_URL; no-op without it.
+//! Integration tests for prevalence and rarity analyst APIs.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{AnnounceRequest, FinalizeRequest, OccurrenceInfo};

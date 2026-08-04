@@ -1,5 +1,7 @@
 -- Merlin telemetry bridge. Raw events remain separate from the verified
 -- artifact occurrence ledger; event identity is still durable and replay-safe.
+--
+-- Merlin segment/observation bridge tables (separate from occurrence ledger).
 
 CREATE TABLE IF NOT EXISTS merlin_segment (
   id              uuid PRIMARY KEY,

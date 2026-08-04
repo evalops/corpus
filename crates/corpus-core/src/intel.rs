@@ -1,10 +1,16 @@
-//! Intel-corpus connectors (M4 vault bootstrap): indicator store,
-//! MalwareBazaar client, TAXII 2.1/STIX 2.1 polling, and exact-hash
-//! hunts against endpoint-scope artifacts.
+//! Intel ↔ corpus connectors (M4 vault bootstrap).
 //!
-//! WARNING: MalwareBazaar samples are live malware. They land in the CAS
-//! with scope='intel', carry no host occurrences, and must never be
-//! executed on this host. Sample access stays restricted-scope.
+//! # Indicator store
+//!
+//! Hash / string indicators land in a tenant-scoped store with provenance
+//! (TAXII, manual upload, …). Exact-hash hunts resolve indicators against
+//! committed artifacts and emit detections on hit.
+//!
+//! # Design bounds
+//!
+//! Indicators are not samples. Matching is digest equality (or future
+//! fuzzy intel) — never "download the malware from the intel feed into
+//! CAS" unless a separate ingest path is used.
 
 use crate::error::{Error, Result};
 use chrono::Utc;

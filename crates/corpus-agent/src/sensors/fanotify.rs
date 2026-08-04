@@ -1,10 +1,8 @@
-//! fanotify sensor (spec 10.10 Linux): mount marks observe close-write and
-//! moved-to events; FAN_OPEN_EXEC is attempted best-effort for execution
-//! prioritization. Queue overflow is persisted as a SENSOR_OVERFLOW
-//! coverage gap and triggers the reconciliation fallback.
+//! Linux fanotify-based change sensor.
 //!
-//! Requires CAP_SYS_ADMIN for FAN_MARK_MOUNT. If initialization fails
-//! (EPERM, unsupported kernel) the caller falls back to the poll sensor.
+//! Marks configured roots and translates events into capture queue
+//! entries. Requires appropriate capabilities; falls back to poll when
+//! unavailable.
 
 use crate::state::{priority, StateDb};
 

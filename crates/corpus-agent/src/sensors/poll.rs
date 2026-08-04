@@ -1,6 +1,7 @@
-//! Reconciliation-scan sensor: platform-neutral fallback that diffs file
-//! stat snapshots on an interval. Also the recovery path after fanotify
-//! queue overflow (spec 10.10 Linux: "trigger reconciliation").
+//! Portable periodic re-scan sensor.
+//!
+//! Used when native journals are unavailable or as a safety net. More
+//! expensive than event-driven sensors; interval is config-driven.
 
 use crate::baseline::reconcile_scan;
 use crate::config::Config;

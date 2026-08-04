@@ -1,18 +1,9 @@
-//! Encrypted spool (M6 hardening, spec 10.3): XChaCha20-Poly1305 at rest,
-//! key generated at enrollment, wrapped by the OS store where available.
+//! At-rest encryption for the local capture spool.
 //!
-//! macOS: Keychain generic-password item. Linux: 0600 key file (documented
-//! fallback; kernel keyring/TPM are later scope).
-//!
-//! Chunked spool format v2 (M9 review fix): every random value comes from
-//! OsRng (no UUID-derived material), and the per-chunk nonce is
-//! `16-byte random prefix || 8-byte little-endian chunk counter`. The
-//! prefix is stored in the spool file header after a one-byte format
-//! version: `[u8 version=2][16B prefix][u32 len][ct]...`. Format v1
-//! (8-byte prefix, no version byte) is REJECTED on read: the spool is
-//! transient, so pre-upgrade spool files are discarded rather than
-//! migrated — the affected candidates terminalize as gaps and are
-//! re-observed by the sensors.
+//! Encrypts staged sample bytes before they rest on disk pending upload.
+//! Format is versioned; older spool blobs are rejected rather than
+//! silently mis-decrypted. Key material is OS-backed where available
+//! (see `win32_dpapi` on Windows).
 
 use anyhow::{Context, Result};
 use chacha20poly1305::aead::{Aead, KeyInit};

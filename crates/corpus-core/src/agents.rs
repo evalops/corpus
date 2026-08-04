@@ -1,8 +1,23 @@
 //! Agent enrollment, heartbeat, and gap reporting (spec 10.1, 10.11).
 //!
-//! M1 auth is deliberately simple: a one-time enrollment token is exchanged
-//! for a per-agent bearer token. mTLS enrollment is production hardening,
-//! not M1 scope (deviation from spec 8.3, documented in README).
+//! # Enrollment
+//!
+//! One-time enrollment tokens mint long-lived agent credentials. Tokens
+//! are shown once, hashed at rest, and expire by TTL. Successful enroll
+//! creates an `agent` row bound to a tenant and returns the credential
+//! material the endpoint stores locally.
+//!
+//! # Heartbeat
+//!
+//! Agents periodically report host identity, agent version, boot id, and
+//! sequence high-water marks. Missed heartbeats surface in coverage gap
+//! views.
+//!
+//! # Gaps
+//!
+//! Agents may report sequence gaps (lost observations). The server
+//! records them for analyst follow-up; it does not re-task the agent
+//! (observe-only).
 
 use crate::dto::{
     AgentStatusResponse, EnrollRequest, EnrollResponse, EnrollmentTokenResponse, GapEvent,
@@ -21,6 +36,7 @@ pub struct AgentIdentity {
     pub host_name: String,
 }
 
+/// SHA-256 of a plaintext enrollment/agent token for at-rest storage.
 pub fn hash_token(token: &str) -> Vec<u8> {
     hash::sha256_raw(token.as_bytes())
 }
@@ -298,6 +314,7 @@ const AGENT_COLS: &str = "id, host_name, version, enrolled_at, last_heartbeat_at
      policy_digest, baseline_state, baseline_percent, queue_depth, spool_bytes,
      oldest_pending_secs, sensor, outcome_counts, clock_offset_ms";
 
+/// List agents for a tenant with last-heartbeat metadata.
 pub async fn list_agents(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<AgentStatusResponse>> {
     let rows = sqlx::query_as::<_, AgentRow>(&format!(
         "SELECT {AGENT_COLS} FROM agent WHERE tenant_id = $1 ORDER BY enrolled_at"
@@ -308,6 +325,7 @@ pub async fn list_agents(pool: &PgPool, tenant_id: Uuid) -> Result<Vec<AgentStat
     Ok(rows.into_iter().map(AgentRow::into_response).collect())
 }
 
+/// Fetch one agent's status by id.
 pub async fn agent_status(
     pool: &PgPool,
     tenant_id: Uuid,

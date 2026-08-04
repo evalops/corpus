@@ -1,5 +1,19 @@
-//! corpusctl: thin administrative/CLI client. All writes go through the
-//! server's REST API; the CLI only classifies, hashes, and uploads bytes.
+//! # corpusctl
+//!
+//! Operator CLI for the corpus platform. Talks only to `corpus-server`
+//! over HTTP — it does not open Postgres or CAS directly.
+//!
+//! # Command groups
+//!
+//! - Artifact ingest and inspection
+//! - Rule registry / bundle publish / activate
+//! - Hunt create / watch / results
+//! - Similarity neighborhood, export, evidence, analyzers, cleanup
+//! - Agent enrollment tokens, intel, investigation, metrics
+//! - CA fingerprint helpers for mTLS deployments
+//!
+//! Authentication uses the admin secret (and optional tenant header).
+//! Prefer this tool for scripted ops; the agent binary is for endpoints.
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};

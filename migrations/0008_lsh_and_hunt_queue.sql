@@ -2,6 +2,8 @@
 -- Each artifact contributes fixed band keys derived from its ssdeep digest;
 -- candidate queries join on (tenant_id, band_idx, band_key) instead of a
 -- full per-class table scan.
+--
+-- LSH band index for byte-similar candidates; hunt worker queue.
 
 CREATE TABLE IF NOT EXISTS similarity_lsh_band (
   tenant_id     uuid NOT NULL REFERENCES tenant (id),

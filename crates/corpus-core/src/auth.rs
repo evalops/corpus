@@ -1,12 +1,15 @@
 //! Admin API authentication and listen-address policy.
 //!
-//! - Loopback binds (`127.0.0.1`, `::1`, `localhost`) may run without an
-//!   admin token for local demos.
-//! - Non-loopback binds refuse to start without `CORPUS_ADMIN_TOKEN`.
-//! - When a token is configured, admin/CLI routes require
-//!   `Authorization: Bearer <token>`.
-//! - MCP requires `CORPUS_MCP_TOKEN`; the dev default `mcp-dev-token` is
-//!   rejected on non-loopback binds.
+//! # Goals
+//!
+//! - Bind admin routes to a shared secret or mTLS identity depending on
+//!   deployment mode.
+//! - Refuse to expose unauthenticated admin APIs on non-loopback
+//!   addresses without an explicit opt-in.
+//!
+//! Agent traffic uses separate enrollment tokens / mTLS (see [`crate::agents`]
+//! and [`crate::mtls`]); this module is for human/admin operators and
+//! control-plane tools like `corpusctl`.
 
 use crate::error::{Error, Result};
 use std::net::SocketAddr;

@@ -1,4 +1,4 @@
-//! Admin token enforcement and non-loopback fail-closed policy.
+//! HTTP tests for admin auth and listen-address policy.
 
 use corpus_core::auth::{is_loopback_listen, AuthConfig, MCP_DEV_TOKEN};
 use std::sync::Mutex;

@@ -1,6 +1,5 @@
-//! Semantic similarity integration test: the validation corpus
-//! (spec 16.7/28.5). Fixtures are compiled at test time with cc —
-//! no committed binaries. Gated on CORPUS_TEST_DATABASE_URL and cc.
+//! Integration tests for semantic extract, match, and edge emission.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::cas::FsCas;
 use corpus_core::dto::{AnnounceRequest, FinalizeRequest, OccurrenceInfo};

@@ -1,5 +1,5 @@
-//! Detonation integration test (M10): full submit->poll->report->finding
-//! flow against an in-process mock CAPE server. No live sandbox.
+//! Integration tests for detonation adapter enqueue/poll storage.
+//! Gated on `CORPUS_TEST_DATABASE_URL`.
 
 use corpus_core::detonate::{CapeProvider, DetonationConfig, DetonationProvider};
 use corpus_core::{db, detonate, tenant};
