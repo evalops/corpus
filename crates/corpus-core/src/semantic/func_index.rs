@@ -1,0 +1,175 @@
+//! Function-level candidate index for semantic similarity.
+//!
+//! Bands are derived from the first bytes of each function's packed token
+//! signature (and a secondary fold). Retrieval is tenant- and
+//! extractor-version-scoped with a hard candidate cap. Cold index falls
+//! back to a full tenant scan without changing correctness.
+
+use crate::error::Result;
+use crate::semantic::edges::{FunctionRow, SEMANTIC_EXTRACTOR_VERSION};
+use sqlx::PgPool;
+use std::collections::HashSet;
+use uuid::Uuid;
+
+pub const FUNC_BAND_COUNT: usize = 4;
+pub const FUNC_CANDIDATE_CAP: i64 = 256;
+
+/// Derive deterministic band keys from a function's token-hash signature.
+pub fn function_bands(token_hashes: &[u64]) -> Vec<(i32, String)> {
+    if token_hashes.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(FUNC_BAND_COUNT);
+    // Band 0: first token hash.
+    out.push((0, format!("{:016x}", token_hashes[0])));
+    // Band 1: last token hash.
+    out.push((1, format!("{:016x}", token_hashes[token_hashes.len() - 1])));
+    // Band 2: XOR fold of all hashes (quantized).
+    let fold = token_hashes.iter().fold(0u64, |a, b| a ^ b);
+    out.push((2, format!("{:016x}", fold)));
+    // Band 3: length bucket + mid hash.
+    let mid = token_hashes[token_hashes.len() / 2];
+    let len_bucket = match token_hashes.len() {
+        0..=4 => 0,
+        5..=16 => 1,
+        17..=64 => 2,
+        _ => 3,
+    };
+    out.push((3, format!("{len_bucket}:{:016x}", mid)));
+    out
+}
+
+/// Replace function-index bands for one artifact.
+pub async fn store_function_bands(
+    pool: &PgPool,
+    tenant: Uuid,
+    artifact: Uuid,
+    functions: &[FunctionRow],
+    version: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM similarity_function_band
+         WHERE tenant_id = $1 AND artifact_id = $2 AND version = $3",
+    )
+    .bind(tenant)
+    .bind(artifact)
+    .bind(version)
+    .execute(pool)
+    .await?;
+
+    let mut band_idx_global = 0i32;
+    for f in functions {
+        for (local_idx, key) in function_bands(&f.token_hashes) {
+            sqlx::query(
+                "INSERT INTO similarity_function_band
+                   (tenant_id, artifact_id, version, band_idx, band_key, func_offset)
+                 VALUES ($1,$2,$3,$4,$5,$6)
+                 ON CONFLICT (tenant_id, artifact_id, version, band_idx, func_offset)
+                 DO UPDATE SET band_key = EXCLUDED.band_key",
+            )
+            .bind(tenant)
+            .bind(artifact)
+            .bind(version)
+            .bind(band_idx_global + local_idx)
+            .bind(&key)
+            .bind(f.offset as i64)
+            .execute(pool)
+            .await?;
+        }
+        band_idx_global += FUNC_BAND_COUNT as i32;
+    }
+    Ok(())
+}
+
+/// True when the tenant has any function-index rows for this version.
+pub async fn index_populated(pool: &PgPool, tenant: Uuid, version: &str) -> Result<bool> {
+    let exists: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM similarity_function_band
+         WHERE tenant_id = $1 AND version = $2 LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(version)
+    .fetch_optional(pool)
+    .await?;
+    Ok(exists.is_some())
+}
+
+/// Candidate artifacts that share at least one function band.
+/// Returns empty when the index is cold (caller falls back).
+pub async fn candidates(
+    pool: &PgPool,
+    tenant: Uuid,
+    artifact: Uuid,
+    functions: &[FunctionRow],
+    version: &str,
+) -> Result<Vec<Uuid>> {
+    if functions.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut keys: HashSet<(i32, String)> = HashSet::new();
+    for f in functions {
+        for (idx, key) in function_bands(&f.token_hashes) {
+            // Query by band_key only (idx varies with packing); use key string.
+            keys.insert((idx % FUNC_BAND_COUNT as i32, key));
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for (band_mod, band_key) in keys {
+        // Match any band whose local index modulo FUNC_BAND_COUNT equals band_mod
+        // and whose key matches — approximate by key alone for simplicity.
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT artifact_id FROM similarity_function_band
+             WHERE tenant_id = $1 AND version = $2 AND band_key = $3
+               AND artifact_id != $4
+               AND (band_idx % $5) = $6
+             LIMIT $7",
+        )
+        .bind(tenant)
+        .bind(version)
+        .bind(&band_key)
+        .bind(artifact)
+        .bind(FUNC_BAND_COUNT as i32)
+        .bind(band_mod)
+        .bind(FUNC_CANDIDATE_CAP)
+        .fetch_all(pool)
+        .await?;
+        for (id,) in rows {
+            if seen.insert(id) {
+                out.push(id);
+            }
+            if out.len() as i64 >= FUNC_CANDIDATE_CAP {
+                return Ok(out);
+            }
+        }
+    }
+    let _ = SEMANTIC_EXTRACTOR_VERSION;
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bands_are_deterministic() {
+        let tokens = vec![1u64, 2, 3, 4, 5, 6, 7, 8];
+        assert_eq!(function_bands(&tokens), function_bands(&tokens));
+        assert_eq!(function_bands(&tokens).len(), FUNC_BAND_COUNT);
+    }
+
+    #[test]
+    fn empty_tokens_no_bands() {
+        assert!(function_bands(&[]).is_empty());
+    }
+
+    #[test]
+    fn similar_token_sets_share_band() {
+        let a = vec![10u64, 20, 30, 40, 50];
+        let b = vec![10u64, 20, 30, 40, 99]; // same first
+        let ka: HashSet<_> = function_bands(&a).into_iter().map(|(_, k)| k).collect();
+        let kb: HashSet<_> = function_bands(&b).into_iter().map(|(_, k)| k).collect();
+        assert!(ka.intersection(&kb).next().is_some());
+    }
+}

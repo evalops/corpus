@@ -385,6 +385,194 @@ async fn similarity_backfill(
     Ok(Json(BackfillResponse { analyzed }))
 }
 
+async fn similarity_neighborhood(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<NeighborhoodQueryParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let seed = q
+        .seed
+        .or(q.sha256)
+        .ok_or_else(|| Error::BadRequest("seed or sha256 required".into()))?;
+    let edge_types = q
+        .edge_types
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let nq = corpus_core::similarity::neighborhood::NeighborhoodQuery {
+        seed,
+        edge_types,
+        model_version: q.model_version,
+        min_score: q.min_score.unwrap_or(0.0),
+        max_depth: q.max_depth.unwrap_or(1),
+        max_nodes: q.max_nodes.unwrap_or(64),
+        max_edges: q.max_edges.unwrap_or(128),
+        offset: q.offset.unwrap_or(0),
+        limit: q.limit.unwrap_or(50),
+        include_weak: q.include_weak.unwrap_or(true),
+    };
+    let resp = corpus_core::similarity::neighborhood::query(&st.pool, t, &nq).await?;
+    Ok(Json(serde_json::to_value(resp).unwrap_or_default()))
+}
+
+#[derive(Debug, Deserialize)]
+struct NeighborhoodQueryParams {
+    seed: Option<String>,
+    sha256: Option<String>,
+    edge_types: Option<String>,
+    model_version: Option<String>,
+    min_score: Option<f64>,
+    max_depth: Option<u32>,
+    max_nodes: Option<usize>,
+    max_edges: Option<usize>,
+    offset: Option<usize>,
+    limit: Option<usize>,
+    include_weak: Option<bool>,
+}
+
+async fn similarity_export(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ExportQueryParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let format = corpus_core::similarity::export::ExportFormat::parse(
+        q.format.as_deref().unwrap_or("json"),
+    )?;
+    if let Some(group_id) = q.group_id {
+        let exp =
+            corpus_core::similarity::export::export_group(&st.pool, t, group_id, format).await?;
+        return Ok(Json(serde_json::to_value(exp).unwrap_or_default()));
+    }
+    let seed = q
+        .seed
+        .or(q.sha256)
+        .ok_or_else(|| Error::BadRequest("seed, sha256, or group_id required".into()))?;
+    let nq = corpus_core::similarity::neighborhood::NeighborhoodQuery {
+        seed,
+        edge_types: q
+            .edge_types
+            .map(|s| {
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default(),
+        model_version: q.model_version,
+        min_score: q.min_score.unwrap_or(0.0),
+        max_depth: q.max_depth.unwrap_or(1),
+        max_nodes: q.max_nodes.unwrap_or(64),
+        max_edges: q.max_edges.unwrap_or(128),
+        offset: 0,
+        limit: q.max_edges.unwrap_or(128),
+        include_weak: q.include_weak.unwrap_or(true),
+    };
+    let exp =
+        corpus_core::similarity::export::export_neighborhood(&st.pool, t, &nq, format).await?;
+    Ok(Json(serde_json::to_value(exp).unwrap_or_default()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ExportQueryParams {
+    seed: Option<String>,
+    sha256: Option<String>,
+    group_id: Option<Uuid>,
+    format: Option<String>,
+    edge_types: Option<String>,
+    model_version: Option<String>,
+    min_score: Option<f64>,
+    max_depth: Option<u32>,
+    max_nodes: Option<usize>,
+    max_edges: Option<usize>,
+    include_weak: Option<bool>,
+}
+
+async fn semantic_evidence(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path((a, b)): Path<(Uuid, Uuid)>,
+    Query(q): Query<EvidenceQueryParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let body = corpus_core::semantic::edges::function_pair_evidence(
+        &st.pool,
+        t,
+        a,
+        b,
+        q.max_pairs.unwrap_or(32),
+        q.max_tokens.unwrap_or(32),
+    )
+    .await?;
+    Ok(Json(body))
+}
+
+#[derive(Debug, Deserialize)]
+struct EvidenceQueryParams {
+    max_pairs: Option<usize>,
+    max_tokens: Option<usize>,
+}
+
+async fn similarity_cleanup(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(artifact_id): Path<Uuid>,
+    Query(q): Query<CleanupQueryParams>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let report = corpus_core::similarity::lifecycle::cleanup_artifact(
+        &st.pool,
+        t,
+        artifact_id,
+        q.dry_run.unwrap_or(true),
+    )
+    .await?;
+    Ok(Json(serde_json::to_value(report).unwrap_or_default()))
+}
+
+#[derive(Debug, Deserialize)]
+struct CleanupQueryParams {
+    dry_run: Option<bool>,
+}
+
+async fn list_analyzers() -> Result<Json<serde_json::Value>, AppError> {
+    let items: Vec<serde_json::Value> = corpus_core::similarity::analyzers::global()
+        .list()
+        .into_iter()
+        .map(|a| {
+            serde_json::json!({
+                "name": a.name,
+                "version": a.version,
+                "formats": a.formats,
+                "architectures": a.architectures,
+                "feature_families": a.feature_families,
+                "supports_backfill": a.supports_backfill,
+                "config_digest": a.config_digest,
+                "status": match a.status {
+                    corpus_core::similarity::analyzers::AnalyzerStatus::Active => "active",
+                    corpus_core::similarity::analyzers::AnalyzerStatus::Retired => "retired",
+                },
+            })
+        })
+        .collect();
+    Ok(Json(serde_json::json!({"analyzers": items})))
+}
+
+async fn artifact_receipts(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(artifact_id): Path<Uuid>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let t = resolve_tenant(&st.pool, &headers).await?;
+    let rows = corpus_core::similarity::receipts::for_artifact(&st.pool, t, artifact_id).await?;
+    Ok(Json(serde_json::json!({"receipts": rows})))
+}
+
 // ---------- agent endpoints (M1) ----------
 
 fn bearer_token(headers: &HeaderMap) -> Result<String, AppError> {
@@ -1334,6 +1522,24 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/artifacts/{sha256}/similar", get(similar))
         .route("/api/v1/artifacts/{sha256}/variants", get(variants))
         .route("/api/v1/similarity/backfill", post(similarity_backfill))
+        .route(
+            "/api/v1/similarity/neighborhood",
+            get(similarity_neighborhood),
+        )
+        .route("/api/v1/similarity/export", get(similarity_export))
+        .route("/api/v1/similarity/analyzers", get(list_analyzers))
+        .route(
+            "/api/v1/similarity/evidence/{a}/{b}",
+            get(semantic_evidence),
+        )
+        .route(
+            "/api/v1/artifacts/{artifact_id}/receipts",
+            get(artifact_receipts),
+        )
+        .route(
+            "/api/v1/artifacts/{artifact_id}/similarity-cleanup",
+            post(similarity_cleanup),
+        )
         .route("/api/v1/enrollment-tokens", post(create_enrollment_token))
         .route("/api/v1/agents/enroll", post(enroll))
         .route("/api/v1/agents/heartbeat", post(agent_heartbeat))

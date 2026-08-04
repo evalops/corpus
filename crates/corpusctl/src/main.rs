@@ -263,6 +263,55 @@ enum IntelCmd {
 enum SimilarityCmd {
     /// Compute features + edges for artifacts that predate M3a.
     Backfill,
+    /// Bounded neighborhood query around an artifact digest or id.
+    Neighborhood {
+        seed: String,
+        #[arg(long)]
+        edge_types: Option<String>,
+        #[arg(long)]
+        model_version: Option<String>,
+        #[arg(long, default_value = "0")]
+        min_score: f64,
+        #[arg(long, default_value = "1")]
+        max_depth: u32,
+        #[arg(long, default_value = "64")]
+        max_nodes: usize,
+        #[arg(long, default_value = "128")]
+        max_edges: usize,
+        #[arg(long, default_value = "false")]
+        no_weak: bool,
+    },
+    /// Export neighborhood or variant group as json|dot|graphml.
+    Export {
+        #[arg(long)]
+        seed: Option<String>,
+        #[arg(long)]
+        group_id: Option<Uuid>,
+        #[arg(long, default_value = "json")]
+        format: String,
+        #[arg(long, default_value = "1")]
+        max_depth: u32,
+        #[arg(long, default_value = "64")]
+        max_nodes: usize,
+    },
+    /// Explainable function-pair evidence for a semantic edge.
+    Evidence {
+        artifact_a: Uuid,
+        artifact_b: Uuid,
+        #[arg(long, default_value = "32")]
+        max_pairs: usize,
+    },
+    /// List registered similarity/semantic analyzers.
+    Analyzers,
+    /// Dry-run or execute derived-row cleanup for one artifact.
+    Cleanup {
+        artifact_id: Uuid,
+        #[arg(long, default_value = "true")]
+        dry_run: bool,
+        /// Set to actually delete (requires --dry-run=false).
+        #[arg(long, default_value = "false")]
+        execute: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1217,6 +1266,84 @@ async fn main() -> Result<()> {
                     .send(client.req(reqwest::Method::POST, "/api/v1/similarity/backfill"))
                     .await?;
                 println!("analyzed: {}", resp.analyzed);
+            }
+            SimilarityCmd::Neighborhood {
+                seed,
+                edge_types,
+                model_version,
+                min_score,
+                max_depth,
+                max_nodes,
+                max_edges,
+                no_weak,
+            } => {
+                let mut url = format!(
+                    "/api/v1/similarity/neighborhood?seed={seed}&min_score={min_score}&max_depth={max_depth}&max_nodes={max_nodes}&max_edges={max_edges}&include_weak={}",
+                    !no_weak
+                );
+                if let Some(et) = edge_types {
+                    url.push_str(&format!("&edge_types={et}"));
+                }
+                if let Some(mv) = model_version {
+                    url.push_str(&format!("&model_version={mv}"));
+                }
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::GET, &url)).await?;
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            }
+            SimilarityCmd::Export {
+                seed,
+                group_id,
+                format,
+                max_depth,
+                max_nodes,
+            } => {
+                let mut url = format!(
+                    "/api/v1/similarity/export?format={format}&max_depth={max_depth}&max_nodes={max_nodes}"
+                );
+                if let Some(s) = seed {
+                    url.push_str(&format!("&seed={s}"));
+                }
+                if let Some(g) = group_id {
+                    url.push_str(&format!("&group_id={g}"));
+                }
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::GET, &url)).await?;
+                if let Some(body) = resp.get("body").and_then(|b| b.as_str()) {
+                    print!("{body}");
+                } else {
+                    println!("{}", serde_json::to_string_pretty(&resp)?);
+                }
+            }
+            SimilarityCmd::Evidence {
+                artifact_a,
+                artifact_b,
+                max_pairs,
+            } => {
+                let url = format!(
+                    "/api/v1/similarity/evidence/{artifact_a}/{artifact_b}?max_pairs={max_pairs}"
+                );
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::GET, &url)).await?;
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            }
+            SimilarityCmd::Analyzers => {
+                let resp: serde_json::Value = client
+                    .send(client.req(reqwest::Method::GET, "/api/v1/similarity/analyzers"))
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&resp)?);
+            }
+            SimilarityCmd::Cleanup {
+                artifact_id,
+                dry_run,
+                execute,
+            } => {
+                let dry = if execute { false } else { dry_run };
+                let url =
+                    format!("/api/v1/artifacts/{artifact_id}/similarity-cleanup?dry_run={dry}");
+                let resp: serde_json::Value =
+                    client.send(client.req(reqwest::Method::POST, &url)).await?;
+                println!("{}", serde_json::to_string_pretty(&resp)?);
             }
         },
 
