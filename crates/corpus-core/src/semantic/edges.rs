@@ -6,6 +6,9 @@ use crate::error::Error;
 use crate::error::Result;
 use crate::semantic::extract::functions_for;
 use crate::semantic::features::{features_for, is_significant, jaccard, MATCH_TAU};
+use crate::semantic::func_index;
+use crate::semantic::suppress;
+use crate::semantic::triage;
 use crate::similarity::analyzers;
 use crate::similarity::model::{
     classify_semantic_edge, model_config_digest, MODEL_V1, MODEL_VERSION,
@@ -39,10 +42,33 @@ pub async fn extract_and_store(
     format: &str,
     bytes: &[u8],
 ) -> Result<(Vec<FunctionRow>, Option<String>)> {
+    // Format-aware packed/virtualized triage (beyond raw entropy).
+    let (sections, import_count, has_overlay) = triage::sections_from_bytes(format, bytes);
+    let report = triage::triage(format, bytes, &sections, import_count, has_overlay);
+    sqlx::query(
+        "INSERT INTO similarity_feature (tenant_id, artifact_id, family, name, version, value, created_at)
+         VALUES ($1,$2,'semantic','triage',$3,$4,$5)
+         ON CONFLICT (tenant_id, artifact_id, family, name, version) DO NOTHING",
+    )
+    .bind(tenant)
+    .bind(artifact)
+    .bind(SEMANTIC_EXTRACTOR_VERSION)
+    .bind(serde_json::to_value(&report).unwrap_or_default())
+    .bind(Utc::now())
+    .execute(pool)
+    .await?;
+
+    if report.block_semantic {
+        let limitation = format!("packed_or_virtualized: {}", report.summary);
+        store_limitation(pool, tenant, artifact, &limitation).await?;
+        return Ok((Vec::new(), Some(limitation)));
+    }
+
     let mut significant = Vec::new();
     let mut total_functions = 0usize;
 
     for (code, spans) in functions_for(format, bytes) {
+        // Defense in depth: still respect entropy gate if triage missed.
         if code.entropy > PACKED_ENTROPY_LIMIT {
             let limitation = format!(
                 "packed_or_high_entropy_code: entropy {:.2} > {}",
@@ -94,6 +120,16 @@ pub async fn extract_and_store(
         .await?;
     }
 
+    // Function-level candidate index.
+    func_index::store_function_bands(
+        pool,
+        tenant,
+        artifact,
+        &significant,
+        SEMANTIC_EXTRACTOR_VERSION,
+    )
+    .await?;
+
     // Aggregate feature row in the semantic schema slot (spec 16.2).
     sqlx::query(
         "INSERT INTO similarity_feature (tenant_id, artifact_id, family, name, version, value, created_at)
@@ -106,6 +142,7 @@ pub async fn extract_and_store(
     .bind(serde_json::json!({
         "function_count": total_functions,
         "significant_count": significant.len(),
+        "triage_version": triage::TRIAGE_VERSION,
     }))
     .bind(Utc::now())
     .execute(pool)
@@ -317,18 +354,74 @@ pub async fn analyze_and_link(
         return Ok(0);
     }
 
-    let others: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT DISTINCT artifact_id FROM similarity_function
-         WHERE tenant_id = $1 AND artifact_id != $2 AND version = $3",
+    // Suppress ubiquitous runtime functions before scoring.
+    let (scoring_fns, suppress_decisions) = suppress::partition(&functions);
+    sqlx::query(
+        "INSERT INTO similarity_feature (tenant_id, artifact_id, family, name, version, value, created_at)
+         VALUES ($1,$2,'semantic','suppression',$3,$4,$5)
+         ON CONFLICT (tenant_id, artifact_id, family, name, version) DO NOTHING",
     )
     .bind(tenant)
     .bind(artifact)
     .bind(SEMANTIC_EXTRACTOR_VERSION)
-    .fetch_all(pool)
+    .bind(serde_json::json!({
+        "suppressor_version": suppress::SUPPRESSOR_VERSION,
+        "decisions": suppress_decisions,
+        "kept": scoring_fns.len(),
+        "suppressed": suppress_decisions.iter().filter(|d| d.suppressed).count(),
+    }))
+    .bind(Utc::now())
+    .execute(pool)
     .await?;
 
+    if scoring_fns.is_empty() {
+        return Ok(0);
+    }
+
+    // Candidate retrieval via function index when populated; else full scan.
+    let index_live = func_index::index_populated(pool, tenant, SEMANTIC_EXTRACTOR_VERSION).await?;
+    let (others, candidate_source): (Vec<Uuid>, &str) = if index_live {
+        let cands = func_index::candidates(
+            pool,
+            tenant,
+            artifact,
+            &scoring_fns,
+            SEMANTIC_EXTRACTOR_VERSION,
+        )
+        .await?;
+        if cands.is_empty() {
+            // Cold or no overlap: fall back without changing correctness.
+            let rows: Vec<(Uuid,)> = sqlx::query_as(
+                "SELECT DISTINCT artifact_id FROM similarity_function
+                 WHERE tenant_id = $1 AND artifact_id != $2 AND version = $3",
+            )
+            .bind(tenant)
+            .bind(artifact)
+            .bind(SEMANTIC_EXTRACTOR_VERSION)
+            .fetch_all(pool)
+            .await?;
+            (
+                rows.into_iter().map(|(id,)| id).collect(),
+                "full_scan_fallback",
+            )
+        } else {
+            (cands, "function_index")
+        }
+    } else {
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT DISTINCT artifact_id FROM similarity_function
+             WHERE tenant_id = $1 AND artifact_id != $2 AND version = $3",
+        )
+        .bind(tenant)
+        .bind(artifact)
+        .bind(SEMANTIC_EXTRACTOR_VERSION)
+        .fetch_all(pool)
+        .await?;
+        (rows.into_iter().map(|(id,)| id).collect(), "full_scan_cold")
+    };
+
     let mut edges = 0;
-    for (other,) in others {
+    for other in others {
         // Class compatibility check (16.4: compatible format/arch).
         let other_class: Option<(String,)> =
             sqlx::query_as("SELECT artifact_class FROM artifact WHERE tenant_id = $1 AND id = $2")
@@ -340,13 +433,28 @@ pub async fn analyze_and_link(
             continue;
         }
         let other_funcs = load_functions(pool, tenant, other).await?;
-        let cov = coverage(&functions, &other_funcs);
+        let (other_scoring, _) = suppress::partition(&other_funcs);
+        let cov = coverage(&scoring_fns, &other_scoring);
         let Some(etype) =
             classify_semantic_edge(&MODEL_V1, cov.a_to_b, cov.b_to_a, cov.matched_pairs)
         else {
             continue;
         };
-        let evidence = build_edge_evidence(&cov, &receipt);
+        let mut evidence = build_edge_evidence(&cov, &receipt);
+        if let Some(obj) = evidence.as_object_mut() {
+            obj.insert(
+                "candidate_source".into(),
+                serde_json::json!(candidate_source),
+            );
+            obj.insert(
+                "suppressor_version".into(),
+                serde_json::json!(suppress::SUPPRESSOR_VERSION),
+            );
+            obj.insert(
+                "suppressed_a".into(),
+                serde_json::json!(suppress_decisions.iter().filter(|d| d.suppressed).count()),
+            );
+        }
         let score = (cov.a_to_b + cov.b_to_a) / 2.0;
         if insert_edge(pool, tenant, artifact, other, etype, score, evidence).await? {
             edges += 1;

@@ -126,6 +126,13 @@ pub async fn cleanup_artifact(
         .bind(artifact)
         .execute(pool)
         .await?;
+    let _ = sqlx::query(
+        "DELETE FROM similarity_function_band WHERE tenant_id = $1 AND artifact_id = $2",
+    )
+    .bind(tenant)
+    .bind(artifact)
+    .execute(pool)
+    .await;
     sqlx::query(
         "DELETE FROM similarity_edge
          WHERE tenant_id = $1 AND (src_artifact = $2 OR dst_artifact = $2)",

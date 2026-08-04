@@ -6,3 +6,6 @@ pub mod edges;
 pub mod extract;
 pub mod features;
 pub mod fixtures;
+pub mod func_index;
+pub mod suppress;
+pub mod triage;
