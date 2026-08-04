@@ -1,7 +1,5 @@
 -- Milestone 1: agent enrollment, identity, and health (spec 10.1, 10.11).
 -- Tenant-scoped like every other data table (0001 tenant registry).
---
--- Agent enrollment tokens, agent rows, heartbeats, and coverage gaps.
 
 -- One-time enrollment tokens minted by operators via corpusctl.
 CREATE TABLE enrollment_token (

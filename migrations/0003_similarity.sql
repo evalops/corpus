@@ -1,6 +1,4 @@
 -- Milestone 3a: similarity features, typed edges, variant groups (spec 16).
---
--- Similarity features, typed edges, and variant groups (byte-level M3a).
 
 -- Versioned features per artifact. family: exact | normalized | byte |
 -- structural | semantic (plugin slot, unpopulated in M3a) | provenance.
