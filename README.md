@@ -39,6 +39,13 @@ endpoint (Linux / Windows)           control plane
                                      triggers, search, detonate, MCP)
 ```
 
+Merlin can optionally forward its accepted JSONL segments to
+`/api/v1/integrations/merlin/segments`. Corpus stores the raw, identity-bearing
+telemetry separately from verified artifact occurrences, so a process event
+can be joined to later byte capture without treating a path or event as a
+file hash. Use a dedicated `CORPUS_MERLIN_INGEST_TOKEN`; do not share the
+Corpus admin token or Merlin's sensor sync key.
+
 ## What it does
 
 | Area | Capabilities |

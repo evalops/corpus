@@ -19,6 +19,7 @@ pub mod hunts;
 pub mod ingest;
 pub mod intel;
 pub mod investigate;
+pub mod merlin;
 pub mod metrics;
 pub mod mtls;
 pub mod oci;

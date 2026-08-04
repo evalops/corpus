@@ -164,6 +164,13 @@ async fn admin_gate(
         .headers()
         .get("authorization")
         .and_then(|v| v.to_str().ok());
+    if path.starts_with("/api/v1/integrations/merlin/") {
+        if let Some(token) = auth.and_then(|value| value.strip_prefix("Bearer ")) {
+            if st.auth.merlin_matches(token) {
+                return Ok(next.run(req).await);
+            }
+        }
+    }
     st.auth.check_admin(auth)?;
     Ok(next.run(req).await)
 }
@@ -579,6 +586,44 @@ async fn report_gaps(
         corpus_core::agents::record_gaps_dev(&st.pool, t, &gaps).await?;
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn ingest_merlin_segment(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<MerlinSegmentRequest>,
+) -> Result<Json<MerlinSegmentResponse>, AppError> {
+    st.auth
+        .check_merlin_ingest(headers.get("authorization").and_then(|v| v.to_str().ok()))?;
+    let tenant_id = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(
+        corpus_core::merlin::ingest_segment(&st.pool, tenant_id, &req).await?,
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+struct MerlinObservationQuery {
+    host: Option<String>,
+    limit: Option<i64>,
+}
+
+async fn list_merlin_observations(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<MerlinObservationQuery>,
+) -> Result<Json<Vec<MerlinObservationView>>, AppError> {
+    st.auth
+        .check_merlin_ingest(headers.get("authorization").and_then(|v| v.to_str().ok()))?;
+    let tenant_id = resolve_tenant(&st.pool, &headers).await?;
+    Ok(Json(
+        corpus_core::merlin::list_observations(
+            &st.pool,
+            tenant_id,
+            q.host.as_deref(),
+            q.limit.unwrap_or(100),
+        )
+        .await?,
+    ))
 }
 
 async fn list_agents(
@@ -1293,6 +1338,14 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/v1/agents/enroll", post(enroll))
         .route("/api/v1/agents/heartbeat", post(agent_heartbeat))
         .route("/api/v1/agents/gaps", post(report_gaps))
+        .route(
+            "/api/v1/integrations/merlin/segments",
+            post(ingest_merlin_segment),
+        )
+        .route(
+            "/api/v1/integrations/merlin/observations",
+            get(list_merlin_observations),
+        )
         .route("/api/v1/agents", get(list_agents))
         .route("/api/v1/agents/{agent_id}", get(agent_status))
         .route("/api/v1/coverage/gaps", get(coverage_gaps))

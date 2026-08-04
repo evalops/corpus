@@ -22,6 +22,7 @@ detonation live beside this file.
 | `CORPUS_CA_DIR` | `./data/ca` | Deployment CA material |
 | `CORPUS_CA_SANS` | (empty) | Extra SANs for server cert (comma-separated) |
 | `CORPUS_ADMIN_TOKEN` | (unset) | Required for non-loopback admin API |
+| `CORPUS_MERLIN_INGEST_TOKEN` | (unset) | Narrow bearer for Merlin telemetry bridge; separate from admin auth |
 | `CORPUS_REQUIRE_ADMIN` | (unset) | Force admin auth even on loopback |
 | `CORPUS_ALLOW_DEV_INGEST` | (unset) | Allow unauthenticated import when admin token is set |
 | `CORPUS_DENY_DEV_INGEST` | (unset) | Disable unauthenticated import on loopback |
@@ -48,10 +49,12 @@ detonation live beside this file.
 3. When the token is set, every admin route needs `Authorization: Bearer <token>`.
 4. Agent traffic uses mTLS on `CORPUS_AGENT_LISTEN`. Enrollment (one-time token) is the only unauthenticated agent bootstrap on the plain listener.
 5. MCP requires `CORPUS_MCP_TOKEN`. The string `mcp-dev-token` is rejected on non-loopback binds.
+6. Merlin integration accepts `CORPUS_MERLIN_INGEST_TOKEN` (or an admin token for local operations) on its two integration routes. The tenant header selects scope but is never authentication.
 
 ```sh
 export CORPUS_ADMIN_TOKEN="$(openssl rand -hex 32)"
 export CORPUS_MCP_TOKEN="$(openssl rand -hex 32)"
+export CORPUS_MERLIN_INGEST_TOKEN="$(openssl rand -hex 32)"
 export CORPUS_LISTEN=0.0.0.0:8080   # only behind a gateway you control
 export CORPUS_AGENT_LISTEN=0.0.0.0:8443
 ```

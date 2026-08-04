@@ -36,6 +36,44 @@ pub struct OccurrenceInfo {
     pub capture_reason: String,
 }
 
+// ---------- Merlin telemetry bridge ----------
+
+/// A batch of raw, identity-bearing Merlin events. The raw event remains
+/// intact so Corpus can join endpoint process evidence to later artifact
+/// captures without pretending that telemetry is a verified file hash.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerlinSegmentRequest {
+    pub schema_version: i32,
+    pub host_name: String,
+    pub segment: String,
+    pub segment_sha256: String,
+    pub events: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerlinSegmentResponse {
+    pub schema_version: i32,
+    pub segment_id: Uuid,
+    pub accepted_events: usize,
+    pub duplicate_events: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MerlinObservationView {
+    pub id: Uuid,
+    pub host_name: String,
+    pub segment: String,
+    pub event_id: String,
+    pub boot_id: String,
+    pub source_seq: Option<i64>,
+    pub kind: String,
+    pub process_key: Option<String>,
+    pub artifact_sha256: Option<String>,
+    pub observed_at: Option<DateTime<Utc>>,
+    pub received_at: DateTime<Utc>,
+    pub payload: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnnounceRequest {
     pub sha256: String,
