@@ -3,13 +3,15 @@
 //! survives recompilation of the same source: mnemonic structure, not
 //! immediates or addresses.
 
+use crate::similarity::model::MODEL_V1;
 use iced_x86::{Decoder, DecoderOptions};
 use sha2::{Digest, Sha256};
 
 pub const SIGNATURE_BITS: usize = 256;
-pub const SIGNIFICANCE_MIN_INSNS: usize = 5;
-/// Match threshold τ for a function pair (model v1, uncalibrated).
-pub const MATCH_TAU: f64 = 0.35;
+/// Re-export of the authoritative significance floor from MODEL_V1.
+pub const SIGNIFICANCE_MIN_INSNS: usize = MODEL_V1.significance_min_insns;
+/// Match threshold τ for a function pair — authoritative source is MODEL_V1.
+pub const MATCH_TAU: f64 = MODEL_V1.semantic_match_tau;
 
 #[derive(Debug, Clone)]
 pub struct FunctionFeatures {
@@ -24,7 +26,7 @@ pub struct FunctionFeatures {
 }
 
 pub fn is_significant(f: &FunctionFeatures) -> bool {
-    f.insn_count >= SIGNIFICANCE_MIN_INSNS && !f.is_thunk
+    f.insn_count >= MODEL_V1.significance_min_insns && !f.is_thunk
 }
 
 fn family(m: iced_x86::Mnemonic) -> String {

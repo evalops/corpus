@@ -4,6 +4,11 @@ Spec 16.2/16.5 calls for Ghidra BSim. We implement the same *class* of
 capability in pure Rust. This document records the research and the
 deliberate simplifications.
 
+**Thresholds in this document are generated from
+`similarity::model::MODEL_V1`.** A unit test fails when the two diverge
+(`design_doc_matches_model_config`). Change the model config, then update
+this file — never the reverse.
+
 ## How BSim works conceptually
 
 Ghidra's BSim extracts per-function feature vectors (instruction
@@ -57,8 +62,9 @@ Standard approach order, per format (goblin already parses all three):
 - basic-block estimate (branch targets inside the function),
 - call/callee degree bucket.
 
-Similarity = 1 − hamming/256. Match threshold τ = 0.85 (model v1,
-uncalibrated).
+Primary pair score is Jaccard over sorted token hashes (not simhash
+hamming). Match threshold τ = 0.35 (model v1, uncalibrated). Simhash
+hamming is retained for future banded indexing.
 
 ## Aggregation (spec 16.4/16.5)
 
@@ -66,11 +72,14 @@ uncalibrated).
   tail-call stub). This is our v1 approximation of known-library
   suppression; a curated CRT signature set is a follow-up and is called
   out as such.
-- For artifacts A,B: `cov(A→B) = significant_A with a match ≥ τ /
-  significant_A`, and `cov(B→A)` likewise.
-- `semantic_variant_strong`: both ≥ 0.60 AND ≥ 5 matched function pairs
+- Function matching is **one-to-one**: greedy max-weight assignment so a
+  single target function cannot satisfy multiple source functions.
+- For artifacts A,B: `cov(A→B) = assigned_A / significant_A`, and
+  `cov(B→A)` likewise, using the same assigned pairs.
+- `semantic_variant_strong`: both ≥ 0.60 AND ≥ 3 matched function pairs
   (merges variant groups). `semantic_variant_weak`: both ≥ 0.35 (lead
-  only). Evidence stores the top-5 function pairs with offsets + scores.
+  only). Evidence stores the top-5 function pairs with offsets + scores,
+  plus the model config digest and tau.
 - Candidate generation: per-tenant bucket by artifact class; per-function
   band filter on the first signature byte before hamming comparison.
   Brute-force at M3 scale; banded LSH index is the follow-up.
@@ -87,3 +96,10 @@ x86-64 only; no decompiler; opt-level drift (-O0 vs -O2) weakens
 mnemonic n-grams for tiny functions (medium functions hold structure);
 packed/virtualized binaries degrade to limitation records; thresholds
 are hand-set, not calibrated.
+
+## Re-analysis note
+
+Edges under `similarity-model:v1` / `semantic:v1` used the thresholds
+above (τ = 0.35, strong min pairs = 3). Bumping any threshold requires a
+new model/extractor version and a backfill; existing v1 edges remain
+valid under their original model identity.
