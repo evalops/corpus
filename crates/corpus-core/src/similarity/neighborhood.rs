@@ -1,7 +1,37 @@
 //! Bounded similarity neighborhood queries for analyst tooling.
 //!
-//! Traverses typed edges from a seed artifact without ever leaving the
-//! tenant or returning sample bytes.
+//! # Purpose
+//!
+//! Given a seed artifact (UUID or sha256), return a **small, tenant-scoped
+//! subgraph** of typed similarity edges and neighbor digests. This powers
+//! the investigation UI and `corpusctl similarity neighborhood`.
+//!
+//! # Safety invariants
+//!
+//! - **Tenant isolation:** every SQL predicate includes `tenant_id`. Seeds
+//!   that resolve in another tenant return NotFound.
+//! - **No sample bytes:** nodes expose `sha256` + class only; edges expose
+//!   a stripped `evidence_ref` (scores, pair counts, receipt id) — never
+//!   disassembly or raw tokens.
+//! - **Hard bounds:** client-requested depth/nodes/edges are clamped to
+//!   [`MAX_DEPTH`] / [`MAX_NODES`] / [`MAX_EDGES`]. Oversized JSON responses
+//!   fail with BadRequest rather than streaming unbounded graphs.
+//!
+//! # Traversal
+//!
+//! BFS from the seed up to `max_depth`. At each node, load undirected
+//! neighbors from `similarity_edge` filtered by model version, min score,
+//! optional edge-type allowlist, and weak-edge inclusion.
+//!
+//! Note: `include_weak` controls whether weak edge types appear in the
+//! result set at all. Variant **group** expansion is a separate concept
+//! (`merges_groups`); neighborhood traversal follows stored edges only.
+//!
+//! # Determinism
+//!
+//! Nodes sort by `(depth, sha256, artifact_id)`. Edges sort by
+//! `(score desc, edge_type, src_sha, dst_sha)`. Pagination (`offset`/`limit`)
+//! applies after sorting so pages are stable.
 
 use crate::error::{Error, Result};
 use crate::similarity::model::MODEL_VERSION;
@@ -10,40 +40,41 @@ use sqlx::PgPool;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use uuid::Uuid;
 
-/// Hard limits enforced regardless of client request.
+/// Hard limits enforced regardless of client request (server-side caps).
 pub const MAX_DEPTH: u32 = 4;
 pub const MAX_NODES: usize = 256;
 pub const MAX_EDGES: usize = 1024;
 pub const MAX_RESPONSE_BYTES: usize = 512 * 1024;
 
+/// Client query parameters for a neighborhood traversal.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NeighborhoodQuery {
     /// Seed artifact digest (hex sha256) or artifact UUID string.
     pub seed: String,
-    /// Edge types to follow (empty = all).
+    /// Edge types to follow (empty = all types).
     #[serde(default)]
     pub edge_types: Vec<String>,
-    /// Restrict to a model version (default: current MODEL_VERSION).
+    /// Restrict to a model version (default: current [`MODEL_VERSION`]).
     pub model_version: Option<String>,
-    /// Minimum edge score.
+    /// Minimum edge score (inclusive).
     #[serde(default)]
     pub min_score: f64,
-    /// Traversal depth (0 = seed only).
+    /// Traversal depth (0 = seed only). Clamped to [`MAX_DEPTH`].
     #[serde(default = "default_depth")]
     pub max_depth: u32,
-    /// Maximum nodes in the response.
+    /// Maximum nodes in the response. Clamped to [`MAX_NODES`].
     #[serde(default = "default_nodes")]
     pub max_nodes: usize,
-    /// Maximum edges in the response.
+    /// Maximum edges collected during traversal. Clamped to [`MAX_EDGES`].
     #[serde(default = "default_edges")]
     pub max_edges: usize,
-    /// Offset for pagination of the edge list.
+    /// Offset for pagination of the sorted edge list.
     #[serde(default)]
     pub offset: usize,
-    /// Page size for edges (after traversal).
+    /// Page size for edges (after traversal and sort).
     #[serde(default = "default_page")]
     pub limit: usize,
-    /// When true, weak edges are returned but never used to expand groups.
+    /// When false, drop weak lead edge types from the graph entirely.
     #[serde(default = "default_true")]
     pub include_weak: bool,
 }
@@ -64,14 +95,19 @@ fn default_true() -> bool {
     true
 }
 
+/// One artifact in the returned subgraph.
 #[derive(Debug, Clone, Serialize)]
 pub struct NeighborhoodNode {
     pub artifact_id: Uuid,
+    /// Hex-encoded sha256 (never raw bytes).
     pub sha256: String,
+    /// Container class (`pe`, `elf`, `macho`, …).
     pub artifact_class: String,
+    /// BFS distance from the seed (0 = seed).
     pub depth: u32,
 }
 
+/// One typed edge with digests on both endpoints and stripped evidence.
 #[derive(Debug, Clone, Serialize)]
 pub struct NeighborhoodEdge {
     pub src_artifact: Uuid,
@@ -81,9 +117,11 @@ pub struct NeighborhoodEdge {
     pub edge_type: String,
     pub model_version: String,
     pub score: f64,
+    /// Bounded reference only: type, score, matched_pairs, receipt_id, tau.
     pub evidence_ref: serde_json::Value,
 }
 
+/// Full neighborhood response with applied limit metadata.
 #[derive(Debug, Clone, Serialize)]
 pub struct NeighborhoodResponse {
     pub tenant_id: Uuid,
@@ -91,11 +129,14 @@ pub struct NeighborhoodResponse {
     pub seed_sha256: String,
     pub model_version: String,
     pub nodes: Vec<NeighborhoodNode>,
+    /// Possibly paginated edge page (see query offset/limit).
     pub edges: Vec<NeighborhoodEdge>,
+    /// True when node or edge caps stopped expansion early.
     pub truncated: bool,
     pub limits: NeighborhoodLimits,
 }
 
+/// Echo of hard caps and the values applied after clamping.
 #[derive(Debug, Clone, Serialize)]
 pub struct NeighborhoodLimits {
     pub max_depth: u32,
@@ -107,6 +148,10 @@ pub struct NeighborhoodLimits {
     pub applied_edges: usize,
 }
 
+/// Execute a bounded neighborhood query for `tenant`.
+///
+/// Resolves the seed, BFS-expands, sorts deterministically, pages edges,
+/// then rejects responses larger than [`MAX_RESPONSE_BYTES`].
 pub async fn query(
     pool: &PgPool,
     tenant: Uuid,
@@ -243,6 +288,7 @@ pub async fn query(
     Ok(resp)
 }
 
+/// Resolve seed as UUID first, else as hex sha256. Always tenant-scoped.
 async fn resolve_seed(pool: &PgPool, tenant: Uuid, seed: &str) -> Result<(Uuid, String, String)> {
     if let Ok(id) = Uuid::parse_str(seed) {
         let row: Option<(Uuid, Vec<u8>, String)> = sqlx::query_as(
@@ -271,6 +317,10 @@ async fn resolve_seed(pool: &PgPool, tenant: Uuid, seed: &str) -> Result<(Uuid, 
         .ok_or_else(|| Error::NotFound(format!("artifact {seed}")))
 }
 
+/// Load undirected neighbors of `artifact` under one model version.
+///
+/// Returns tuples of `(edge, other_id, other_sha_hex, other_class)` with
+/// evidence already reduced to a reference object.
 async fn load_neighbors(
     pool: &PgPool,
     tenant: Uuid,

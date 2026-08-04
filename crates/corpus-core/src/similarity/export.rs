@@ -1,7 +1,29 @@
 //! Deterministic export of similarity graphs for offline analyst tooling.
 //!
-//! Canonical format is JSON. DOT and GraphML are derived views. Exports
-//! never include sample bytes and are hard-bounded.
+//! # Formats
+//!
+//! | Format | Role |
+//! |--------|------|
+//! | **JSON** | Canonical interchange (`schema_version: similarity-export:v1`) |
+//! | **DOT** | Graphviz-friendly derived view |
+//! | **GraphML** | XML graph interchange derived view |
+//!
+//! JSON is the source of truth for equality tests and re-import. DOT and
+//! GraphML are lossy presentations (labels/scores only).
+//!
+//! # Sources
+//!
+//! - [`export_neighborhood`] — BFS neighborhood via
+//!   [`crate::similarity::neighborhood`].
+//! - [`export_group`] — all members of a variant group plus edges whose
+//!   both endpoints are members.
+//!
+//! # Safety
+//!
+//! Same invariants as neighborhood queries: tenant-scoped, no sample
+//! bytes, hard size bound [`MAX_EXPORT_BYTES`]. Node/edge order in JSON
+//! is sorted by digests so identical graphs produce identical bytes
+//! (modulo `generated_at` on the wrapper).
 
 use crate::error::{Error, Result};
 use crate::similarity::model::MODEL_VERSION;
@@ -10,12 +32,17 @@ use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Maximum serialized body size for any export format (1 MiB).
 pub const MAX_EXPORT_BYTES: usize = 1024 * 1024;
 
+/// Supported wire formats for graph export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
+    /// Canonical pretty-printed JSON document.
     Json,
+    /// Graphviz `strict graph` DOT.
     Dot,
+    /// GraphML XML.
     GraphMl,
 }
 
@@ -32,15 +59,20 @@ impl ExportFormat {
     }
 }
 
+/// Wrapper returned to API/CLI: metadata + rendered body string.
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphExport {
+    /// `json` | `dot` | `graphml`.
     pub format: String,
     pub model_version: String,
     pub tenant_id: Uuid,
+    /// Wall-clock generation time (not part of body determinism).
     pub generated_at: chrono::DateTime<chrono::Utc>,
+    /// Rendered document bytes as UTF-8 text.
     pub body: String,
     pub node_count: usize,
     pub edge_count: usize,
+    /// Propagated from the underlying neighborhood/group query.
     pub truncated: bool,
 }
 
@@ -55,7 +87,10 @@ pub async fn export_neighborhood(
     render(tenant, &graph, format)
 }
 
-/// Export a variant group as its member graph with incident edges.
+/// Export a variant group as its member graph with intra-group edges only.
+///
+/// Members are ordered by sha256. Edges are those with both endpoints in
+/// the member set (not the full incident star to the rest of the tenant).
 pub async fn export_group(
     pool: &PgPool,
     tenant: Uuid,
@@ -152,6 +187,7 @@ pub async fn export_group(
     render(tenant, &graph, format)
 }
 
+/// Render a neighborhood response into the chosen format and enforce size.
 fn render(tenant: Uuid, graph: &NeighborhoodResponse, format: ExportFormat) -> Result<GraphExport> {
     let body = match format {
         ExportFormat::Json => render_json(graph)?,
@@ -180,6 +216,7 @@ fn render(tenant: Uuid, graph: &NeighborhoodResponse, format: ExportFormat) -> R
     })
 }
 
+/// Canonical JSON: sorted nodes/edges, fixed schema_version, no sample bytes.
 fn render_json(graph: &NeighborhoodResponse) -> Result<String> {
     #[derive(Serialize)]
     struct Canonical {
@@ -258,6 +295,7 @@ fn render_json(graph: &NeighborhoodResponse) -> Result<String> {
     serde_json::to_string_pretty(&c).map_err(|e| Error::BadRequest(format!("json serialize: {e}")))
 }
 
+/// Graphviz undirected graph; node labels use first 12 hex chars of sha256.
 fn render_dot(graph: &NeighborhoodResponse) -> String {
     let mut out = String::from("strict graph similarity {\n");
     out.push_str("  graph [overlap=false];\n");
@@ -280,6 +318,7 @@ fn render_dot(graph: &NeighborhoodResponse) -> String {
     out
 }
 
+/// GraphML with keys for sha256, artifact_class, edge_type, score, model.
 fn render_graphml(graph: &NeighborhoodResponse) -> String {
     let mut out = String::from(
         r#"<?xml version="1.0" encoding="UTF-8"?>

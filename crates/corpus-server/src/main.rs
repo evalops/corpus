@@ -385,6 +385,9 @@ async fn similarity_backfill(
     Ok(Json(BackfillResponse { analyzed }))
 }
 
+/// `GET /api/v1/similarity/neighborhood` — bounded BFS over typed edges
+/// from a seed UUID or sha256. Tenant-scoped; hard caps on depth/nodes/
+/// edges; never returns sample bytes. See `similarity::neighborhood`.
 async fn similarity_neighborhood(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -435,6 +438,9 @@ struct NeighborhoodQueryParams {
     include_weak: Option<bool>,
 }
 
+/// `GET /api/v1/similarity/export` — JSON/DOT/GraphML of a neighborhood
+/// or variant group. Requires `seed`/`sha256` or `group_id`. Never returns
+/// sample bytes; body size is hard-capped in core.
 async fn similarity_export(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -493,6 +499,9 @@ struct ExportQueryParams {
     include_weak: Option<bool>,
 }
 
+/// `GET /api/v1/similarity/evidence/{a}/{b}` — recompute one-to-one
+/// function-pair evidence for two artifacts in the caller's tenant.
+/// Bounded pair/token counts; no sample bytes.
 async fn semantic_evidence(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -518,6 +527,9 @@ struct EvidenceQueryParams {
     max_tokens: Option<usize>,
 }
 
+/// `POST /api/v1/artifacts/{id}/similarity-cleanup` — dry-run (default) or
+/// execute deletion of similarity-derived rows for one artifact. Legal
+/// hold blocks destructive runs. See `similarity::lifecycle`.
 async fn similarity_cleanup(
     State(st): State<AppState>,
     headers: HeaderMap,
@@ -540,6 +552,8 @@ struct CleanupQueryParams {
     dry_run: Option<bool>,
 }
 
+/// `GET /api/v1/similarity/analyzers` — capability discovery for registered
+/// extractor/model versions (formats, arch, config digests, active/retired).
 async fn list_analyzers() -> Result<Json<serde_json::Value>, AppError> {
     let items: Vec<serde_json::Value> = corpus_core::similarity::analyzers::global()
         .list()
@@ -563,6 +577,9 @@ async fn list_analyzers() -> Result<Json<serde_json::Value>, AppError> {
     Ok(Json(serde_json::json!({"analyzers": items})))
 }
 
+/// `GET /api/v1/artifacts/{id}/receipts` — deterministic analysis receipts
+/// for an artifact (analyzer versions, config digests, limitations).
+/// Bodies never include sample bytes.
 async fn artifact_receipts(
     State(st): State<AppState>,
     headers: HeaderMap,

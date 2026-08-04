@@ -1,7 +1,44 @@
 //! Deterministic analysis receipts for similarity and semantic runs.
 //!
-//! A receipt records who analyzed what, with which model/config, and the
-//! bounded outcome. Receipts never store sample bytes.
+//! # Purpose
+//!
+//! Every analysis pass should leave an auditable record of:
+//!
+//! - **Who** ran (analyzer name + version)
+//! - **What** was analyzed (artifact id, input sha256 + size)
+//! - **With which policy** (model version + config digest)
+//! - **Outcome** (status, optional limitation, function/edge counts)
+//!
+//! Receipts answer “why is this edge missing?” (packed limitation) and
+//! “which thresholds produced this edge?” without re-reading sample
+//! bytes from CAS.
+//!
+//! # Privacy invariant
+//!
+//! Receipts **never** store sample bytes, disassembly, or full token
+//! vectors. The body is a JSON serialization of [`AnalysisReceipt`]
+//! only — digests and counts.
+//!
+//! # Identity
+//!
+//! [`receipt_id`] is a content-derived 16-byte hex digest (SHA-256
+//! truncated), not a random UUID. Re-running identical analysis with the
+//! same inputs upserts the same row (`ON CONFLICT (id) DO UPDATE`), which
+//! makes concurrent re-analysis idempotent.
+//!
+//! Fields included in the id payload (see [`receipt_id`]):
+//! tenant, artifact, analyzer name/version, model version, config
+//! digest, input sha256, status, function_count.
+//!
+//! # Schema
+//!
+//! See `migrations/0010_receipts_and_cleanup.sql` (`analysis_receipt`).
+//!
+//! # Pipeline hooks
+//!
+//! `semantic::edges::analyze_and_link` persists a receipt after extract
+//! (status `ok` / `empty` / `limitation`) and updates it after edge
+//! emission with the final `edge_count`.
 
 use crate::error::Result;
 use chrono::{DateTime, Utc};
@@ -10,26 +47,42 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Structured analysis outcome persisted under a content-derived id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisReceipt {
     pub tenant_id: Uuid,
     pub artifact_id: Uuid,
+    /// Registry name, e.g. `semantic-function`.
     pub analyzer_name: String,
+    /// Persisted version string, e.g. `semantic:v1`.
     pub analyzer_version: String,
+    /// Edge model version, e.g. `similarity-model:v1`.
     pub model_version: String,
+    /// Digest of thresholds/weights that affect scoring identity.
     pub config_digest: String,
+    /// Hex SHA-256 of the bytes that were analyzed.
     pub input_sha256: String,
     pub input_size_bytes: u64,
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
+    /// Coarse outcome: `ok`, `empty`, `limitation`, or future values.
     pub status: String,
+    /// When status is `limitation`, a short machine-readable reason
+    /// (e.g. `packed_or_virtualized: …`). Never sample content.
     pub limitation: Option<String>,
+    /// Significant functions retained after extract filters.
     pub function_count: usize,
+    /// Edges inserted during this pass (may be updated on a second persist).
     pub edge_count: usize,
+    /// Extra structured metrics (format, arch, …) — still no sample bytes.
     pub metrics: serde_json::Value,
 }
 
 /// Stable receipt identifier derived from content (not random).
+///
+/// Changing any field in the payload changes the id, so a re-run that
+/// discovers more functions creates a distinct receipt row rather than
+/// silently overwriting history under a random key.
 pub fn receipt_id(r: &AnalysisReceipt) -> String {
     let payload = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -47,6 +100,11 @@ pub fn receipt_id(r: &AnalysisReceipt) -> String {
     hex::encode(&h[..16])
 }
 
+/// Upsert a receipt by content-derived id.
+///
+/// Concurrent identical runs converge on one row. A later pass that
+/// updates `edge_count` / `status` refreshes `body` and `created_at`
+/// (which stores `finished_at` for chronological listing).
 pub async fn persist(pool: &PgPool, receipt: &AnalysisReceipt) -> Result<()> {
     let id = receipt_id(receipt);
     let body = serde_json::to_value(receipt).unwrap_or_else(|_| serde_json::json!({}));
@@ -74,6 +132,8 @@ pub async fn persist(pool: &PgPool, receipt: &AnalysisReceipt) -> Result<()> {
     Ok(())
 }
 
+/// List receipts for an artifact (newest first), injecting `receipt_id`
+/// into each JSON body for API convenience.
 pub async fn for_artifact(
     pool: &PgPool,
     tenant: Uuid,

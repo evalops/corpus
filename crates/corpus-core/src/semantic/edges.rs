@@ -1,6 +1,50 @@
-//! Semantic variant matching (spec 16.4/16.5): per-function signature
-//! storage, candidate scoring, one-to-one coverage, and strong/weak edge
-//! emission. See docs/semantic-similarity-design.md.
+//! Semantic variant matching (spec 16.4 / 16.5).
+//!
+//! # Pipeline overview
+//!
+//! ```text
+//! bytes + format
+//!    │
+//!    ├─► triage (packed / RWX / markers) ──block?──► limitation receipt, no edges
+//!    │
+//!    ├─► function spans + mnemonic tokens (x86_64)
+//!    │       └─ significance filter (≥ N insns, not thunk)
+//!    │
+//!    ├─► persist similarity_function + function LSH bands
+//!    │
+//!    ├─► suppress ubiquitous runtime names/shapes
+//!    │
+//!    ├─► candidate artifacts (function index, else full scan)
+//!    │
+//!    ├─► one-to-one greedy coverage @ τ
+//!    │
+//!    └─► classify strong/weak → insert edges (+ union groups if strong)
+//!            └─ analysis receipt (no sample bytes)
+//! ```
+//!
+//! # Matching algorithm (coverage)
+//!
+//! 1. For every pair of post-suppression functions, compute Jaccard over
+//!    sorted token-hash sets.
+//! 2. Keep pairs with score ≥ τ ([`MATCH_TAU`] / [`MODEL_V1::semantic_match_tau`]).
+//! 3. Sort candidates by `(score desc, a_offset, b_offset)` for
+//!    deterministic ties.
+//! 4. Greedy assign so each function is used at most once
+//!    (**one-to-one**, not many-to-one inflation).
+//! 5. Coverage = `matched / |functions|` in each direction.
+//! 6. Contested = had a ≥τ candidate but lost assignment; unmatched = none.
+//!
+//! # Isolation & idempotency
+//!
+//! - All SQL is tenant-scoped.
+//! - Edges insert with `ON CONFLICT DO NOTHING` on
+//!   `(tenant, src, dst, edge_type, model_version)` (canonical `src < dst`).
+//! - Concurrent analysis of the same pair converges on one edge.
+//!
+//! # Design doc
+//!
+//! `docs/semantic-similarity-design.md` — thresholds are CI-checked against
+//! [`MODEL_V1`].
 
 use crate::error::Error;
 use crate::error::Result;
@@ -18,23 +62,41 @@ use chrono::Utc;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Persisted on every `similarity_function.version` and related features.
 pub const SEMANTIC_EXTRACTOR_VERSION: &str = "semantic:v1";
+
+/// Re-export of the packed-entropy gate from the authoritative model config.
 pub const PACKED_ENTROPY_LIMIT: f64 = MODEL_V1.packed_entropy_limit;
 
 /// Schema version for explainable function-pair evidence responses.
 pub const EVIDENCE_SCHEMA_VERSION: &str = "semantic-evidence:v1";
 
+/// One significant function as stored / loaded for scoring.
+///
+/// `token_hashes` is the sorted unique set used by Jaccard; on disk it is
+/// packed as little-endian `u64`s in `similarity_function.sig`.
 #[derive(Clone)]
 pub struct FunctionRow {
+    /// File offset of the function start (stable identity within artifact).
     pub offset: u64,
     pub size: usize,
+    /// Optional symbol / export name when available.
     pub name: Option<String>,
     pub insn_count: usize,
+    /// Sorted, deduplicated mnemonic-family token hashes.
     pub token_hashes: Vec<u64>,
 }
 
 /// Extract, filter, and persist function signatures for one artifact.
-/// Returns (significant rows, limitation if any).
+///
+/// Returns `(significant rows, limitation)`. When limitation is `Some`,
+/// no functions are returned and callers should not emit semantic edges.
+///
+/// Side effects (all tenant-scoped, idempotent on re-run):
+/// - triage report feature row
+/// - optional `analysis_limitation` feature
+/// - `similarity_function` rows + function-index bands
+/// - aggregate semantic feature row
 pub async fn extract_and_store(
     pool: &PgPool,
     tenant: Uuid,
@@ -172,18 +234,27 @@ async fn store_limitation(
     Ok(())
 }
 
+/// One accepted (or top-listed) function pair with Jaccard score.
 #[derive(Debug, Clone)]
 pub struct PairScore {
     pub a_offset: u64,
     pub b_offset: u64,
+    /// Jaccard over token-hash sets in \[0, 1\].
     pub score: f64,
 }
 
+/// Result of one-to-one greedy matching between two function sets.
+///
+/// Coverage denominators are the input slice lengths (post-suppression
+/// when called from analyze). Empty inputs yield coverage 0.0.
 #[derive(Debug, Clone)]
 pub struct Coverage {
+    /// Fraction of A's functions that received an assignment.
     pub a_to_b: f64,
+    /// Fraction of B's functions that received an assignment.
     pub b_to_a: f64,
     pub matched_pairs: usize,
+    /// Up to 5 highest-scoring assigned pairs (for edge evidence).
     pub top_pairs: Vec<PairScore>,
     /// Functions on A that had a candidate ≥ τ but lost the assignment.
     pub contested_a: Vec<u64>,
@@ -195,15 +266,17 @@ pub struct Coverage {
     pub unmatched_b: Vec<u64>,
 }
 
-/// One-to-one bidirectional coverage (spec 16.5 step 4).
+/// One-to-one bidirectional coverage using the model default τ.
 ///
-/// Candidate pairs with Jaccard ≥ τ are ranked by score (desc), then by
-/// `(a_offset, b_offset)` for deterministic tie-breaking. Greedy assignment
-/// ensures each function appears in at most one accepted pair.
+/// See module docs for the full algorithm. Spec 16.5 step 4.
 pub fn coverage(a: &[FunctionRow], b: &[FunctionRow]) -> Coverage {
     coverage_with_tau(a, b, MATCH_TAU)
 }
 
+/// Same as [`coverage`] with an explicit Jaccard threshold.
+///
+/// Useful for sensitivity analysis and tests; production analysis always
+/// uses [`MATCH_TAU`].
 pub fn coverage_with_tau(a: &[FunctionRow], b: &[FunctionRow], tau: f64) -> Coverage {
     let mut candidates: Vec<(usize, usize, f64)> = Vec::new();
     for (i, fa) in a.iter().enumerate() {
@@ -301,9 +374,15 @@ pub fn coverage_with_tau(a: &[FunctionRow], b: &[FunctionRow], tau: f64) -> Cove
     }
 }
 
-/// Full semantic pass for one newly analyzed artifact: extract functions,
-/// then score against every other artifact in the tenant that has stored
-/// function signatures for the same class. Returns edges inserted.
+/// Full semantic pass for one newly analyzed artifact.
+///
+/// Steps: resolve analyzer → extract/store → receipt → suppress → candidate
+/// retrieval → pairwise coverage → classify → insert edges (union groups
+/// on strong) → update receipt edge count.
+///
+/// Returns the number of **newly inserted** edges (idempotent re-runs may
+/// return 0 even when relationships already exist). Unsupported artifact
+/// classes (`unknown`, etc.) return 0 without error.
 pub async fn analyze_and_link(
     pool: &PgPool,
     tenant: Uuid,
@@ -470,6 +549,7 @@ pub async fn analyze_and_link(
     Ok(edges)
 }
 
+/// Compact evidence blob stored on the edge (no sample bytes / full tokens).
 fn build_edge_evidence(cov: &Coverage, receipt: &AnalysisReceipt) -> serde_json::Value {
     serde_json::json!({
         "coverage_a_to_b": cov.a_to_b,
@@ -491,6 +571,7 @@ fn build_edge_evidence(cov: &Coverage, receipt: &AnalysisReceipt) -> serde_json:
     })
 }
 
+/// Load significant functions for an artifact under the current extractor version.
 async fn load_functions(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<Vec<FunctionRow>> {
     #[derive(sqlx::FromRow)]
     struct FnRow {
@@ -529,6 +610,10 @@ async fn load_functions(pool: &PgPool, tenant: Uuid, artifact: Uuid) -> Result<V
         .collect())
 }
 
+/// Insert a canonical undirected edge (`src_artifact < dst_artifact`).
+///
+/// Returns `true` when a new row was inserted. Strong edge types trigger
+/// variant-group union via [`crate::similarity::edges::union_groups`].
 async fn insert_edge(
     pool: &PgPool,
     tenant: Uuid,
@@ -538,6 +623,7 @@ async fn insert_edge(
     score: f64,
     evidence: serde_json::Value,
 ) -> Result<bool> {
+    // Canonical endpoint order keeps the unique key orientation-stable.
     let (src, dst) = if a < b { (a, b) } else { (b, a) };
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO similarity_edge (tenant_id, src_artifact, dst_artifact, edge_type, model_version, score, evidence, created_at)
@@ -562,7 +648,16 @@ async fn insert_edge(
 }
 
 /// Bounded explainable evidence for a semantic edge between two artifacts.
-/// Never returns sample bytes; tenant-scoped.
+///
+/// Recomputes one-to-one matching live from stored function signatures so
+/// analysts can inspect pair scores, contested/unmatched offsets, and a
+/// **prefix** of token hashes (not full disassembly).
+///
+/// Hard caps: ≤64 pairs, ≤64 tokens per function, ≤256 KiB JSON. Exceeding
+/// the byte budget returns BadRequest rather than truncating silently mid-
+/// object.
+///
+/// Never returns sample bytes; always tenant-scoped.
 pub async fn function_pair_evidence(
     pool: &PgPool,
     tenant: Uuid,

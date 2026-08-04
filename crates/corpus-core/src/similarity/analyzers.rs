@@ -1,8 +1,49 @@
 //! Versioned analyzer registry for similarity and semantic extractors.
 //!
-//! Each analyzer is keyed by a stable name and version string. Stored
-//! features and edges retain that identity so capability discovery and
-//! controlled migrations do not require code archaeology.
+//! # Problem
+//!
+//! Feature rows, function signatures, and edges all carry a `version`
+//! string (e.g. `semantic:v1`, `similarity-model:v1`). Without a central
+//! registry, operators cannot answer:
+//!
+//! - Which analyzers exist and what do they produce?
+//! - Is a stored version still active or retired?
+//! - What formats / architectures does an analyzer support?
+//! - What config digest was baked into a given model version?
+//!
+//! Capability discovery and controlled migrations should not require
+//! reading source history.
+//!
+//! # Model
+//!
+//! An [`AnalyzerInfo`] is a static capability declaration keyed by
+//! `(name, version)`. The in-process [`AnalyzerRegistry`] is populated
+//! once via [`global`] / [`built_in_registry`].
+//!
+//! Lookups **fail closed**:
+//!
+//! - Unknown name/version → `Error::BadRequest`
+//! - Known but [`AnalyzerStatus::Retired`] → `Error::BadRequest` with
+//!   a retire message (callers must pick an active version)
+//!
+//! Analysis entry points (`semantic::edges::analyze_and_link`) call
+//! [`resolve`] before work so a retired analyzer cannot silently run.
+//!
+//! # Built-in analyzers (v1)
+//!
+//! | Name | Version const | Families |
+//! |------|---------------|----------|
+//! | `byte-feature-extractor` | `EXTRACTOR_VERSION` | byte, normalized, structural, provenance |
+//! | `semantic-function` | `SEMANTIC_EXTRACTOR_VERSION` | semantic (x86_64) |
+//! | `similarity-model` | `MODEL_VERSION` | edge classification / thresholds |
+//!
+//! All three share a `config_digest` derived from [`MODEL_V1`] via
+//! [`model_config_digest`] so receipts can prove threshold identity.
+//!
+//! # Non-goals
+//!
+//! - Dynamic plugin loading (registry is compile-time / process-static).
+//! - Per-tenant analyzer enablement (global process config only).
 
 use crate::error::{Error, Result};
 use crate::semantic::edges::SEMANTIC_EXTRACTOR_VERSION;
@@ -12,6 +53,9 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 /// Capability declaration for one analyzer implementation.
+///
+/// Fields use `'static` data where possible so the built-in registry
+/// can be constructed without allocation of name/format tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnalyzerInfo {
     /// Stable name, e.g. `byte-feature-extractor` or `semantic-function`.
@@ -27,18 +71,24 @@ pub struct AnalyzerInfo {
     /// Whether re-running over existing artifacts is safe and idempotent.
     pub supports_backfill: bool,
     /// Digest of configuration that affects output identity.
+    ///
+    /// For model-coupled analyzers this is [`model_config_digest`]; it
+    /// lets receipts prove which thresholds produced an edge.
     pub config_digest: String,
     /// Human-readable status for capability discovery.
     pub status: AnalyzerStatus,
 }
 
+/// Lifecycle state of a registered analyzer version.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnalyzerStatus {
+    /// Safe to invoke for new analysis and backfill.
     Active,
+    /// Still listed for archaeology; [`AnalyzerRegistry::lookup`] rejects it.
     Retired,
 }
 
-/// Lookup key: name + version.
+/// Lookup key: name + version (owned strings for flexible query APIs).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AnalyzerKey {
     pub name: String,
@@ -55,6 +105,9 @@ impl AnalyzerKey {
 }
 
 /// In-process registry of known analyzers.
+///
+/// Uses a [`BTreeMap`] so [`list`] / [`list_ids`] are deterministically
+/// ordered (stable API responses and tests).
 #[derive(Debug, Default)]
 pub struct AnalyzerRegistry {
     by_key: BTreeMap<AnalyzerKey, AnalyzerInfo>,
@@ -65,11 +118,16 @@ impl AnalyzerRegistry {
         Self::default()
     }
 
+    /// Insert or replace an analyzer under its `(name, version)` key.
     pub fn register(&mut self, info: AnalyzerInfo) {
         let key = AnalyzerKey::new(info.name, info.version);
         self.by_key.insert(key, info);
     }
 
+    /// Resolve an active analyzer or return a closed-form error.
+    ///
+    /// Retired analyzers are distinguishable from unknown ones in the
+    /// error message so operators know whether to re-register or migrate.
     pub fn lookup(&self, name: &str, version: &str) -> Result<&AnalyzerInfo> {
         let key = AnalyzerKey::new(name, version);
         match self.by_key.get(&key) {
@@ -85,6 +143,9 @@ impl AnalyzerRegistry {
     }
 
     /// Resolve by the version string stored on rows (e.g. `semantic:v1`).
+    ///
+    /// Useful when only the persisted version id is available (no name).
+    /// Does **not** enforce Active status — use [`lookup`] when invoking.
     pub fn lookup_by_version_id(&self, version_id: &str) -> Result<&AnalyzerInfo> {
         self.by_key
             .values()
@@ -92,10 +153,12 @@ impl AnalyzerRegistry {
             .ok_or_else(|| Error::BadRequest(format!("unknown analyzer version {version_id}")))
     }
 
+    /// All registered analyzers (active and retired), key order.
     pub fn list(&self) -> Vec<&AnalyzerInfo> {
         self.by_key.values().collect()
     }
 
+    /// `name@version` strings for error messages and capability lists.
     pub fn list_ids(&self) -> Vec<String> {
         self.by_key
             .values()
@@ -103,6 +166,7 @@ impl AnalyzerRegistry {
             .collect()
     }
 
+    /// Active analyzers only (what new analysis may select).
     pub fn active(&self) -> Vec<&AnalyzerInfo> {
         self.by_key
             .values()
@@ -111,12 +175,16 @@ impl AnalyzerRegistry {
     }
 }
 
-/// Built-in registry populated at first use.
+/// Built-in registry populated at first use (process-wide singleton).
 pub fn global() -> &'static AnalyzerRegistry {
     static REG: OnceLock<AnalyzerRegistry> = OnceLock::new();
     REG.get_or_init(built_in_registry)
 }
 
+/// Construct the default registry with current extractors and model.
+///
+/// Exposed separately from [`global`] so tests can inspect a fresh copy
+/// without mutating the process singleton.
 pub fn built_in_registry() -> AnalyzerRegistry {
     let mut reg = AnalyzerRegistry::new();
     let cfg_digest = model_config_digest(&MODEL_V1);
@@ -136,6 +204,7 @@ pub fn built_in_registry() -> AnalyzerRegistry {
         name: "semantic-function",
         version: SEMANTIC_EXTRACTOR_VERSION,
         formats: &["pe", "elf", "macho"],
+        // AArch64 is a planned follow-up (issue #18); claim only x86_64.
         architectures: &["x86_64"],
         feature_families: &["semantic"],
         supports_backfill: true,
@@ -157,7 +226,7 @@ pub fn built_in_registry() -> AnalyzerRegistry {
     reg
 }
 
-/// Convenience: resolve an analysis request or fail closed.
+/// Convenience: resolve against the process-global registry or fail closed.
 pub fn resolve(name: &str, version: &str) -> Result<&'static AnalyzerInfo> {
     global().lookup(name, version)
 }

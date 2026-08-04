@@ -1,7 +1,21 @@
 //! Per-function feature vectors and 256-bit simhash signatures
-//! (docs/semantic-similarity-design.md). Signatures capture what
-//! survives recompilation of the same source: mnemonic structure, not
-//! immediates or addresses.
+//! (docs/semantic-similarity-design.md).
+//!
+//! # What is preserved
+//!
+//! Tokens capture **mnemonic structure** that tends to survive recompilation
+//! of the same source: instruction *families* (`mov`, `arith`, `jcc`, …),
+//! not immediates, absolute addresses, or register allocation details.
+//!
+//! # Scoring inputs
+//!
+//! - [`FunctionFeatures::token_hashes`] — sorted unique SHA-256-derived
+//!   u64s over family tokens; Jaccard similarity is the pair score.
+//! - [`FunctionFeatures::signature`] — 256-bit simhash reserved for future
+//!   banded indexing (not the primary v1 scorer).
+//!
+//! Thresholds [`MATCH_TAU`] and [`SIGNIFICANCE_MIN_INSNS`] re-export
+//! [`MODEL_V1`] so they cannot drift from the model registry.
 
 use crate::similarity::model::MODEL_V1;
 use iced_x86::{Decoder, DecoderOptions};
@@ -13,6 +27,7 @@ pub const SIGNIFICANCE_MIN_INSNS: usize = MODEL_V1.significance_min_insns;
 /// Match threshold τ for a function pair — authoritative source is MODEL_V1.
 pub const MATCH_TAU: f64 = MODEL_V1.semantic_match_tau;
 
+/// Features extracted from one decoded function body.
 #[derive(Debug, Clone)]
 pub struct FunctionFeatures {
     /// Simhash kept for future banded indexing.
@@ -22,9 +37,11 @@ pub struct FunctionFeatures {
     pub insn_count: usize,
     pub block_estimate: usize,
     pub call_count: usize,
+    /// True for pure jmp/ret stubs — excluded from significance.
     pub is_thunk: bool,
 }
 
+/// Whether a function is large enough and non-trivial to enter matching.
 pub fn is_significant(f: &FunctionFeatures) -> bool {
     f.insn_count >= MODEL_V1.significance_min_insns && !f.is_thunk
 }

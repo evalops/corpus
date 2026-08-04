@@ -1,38 +1,76 @@
 //! Versioned similarity model: thresholds and weights live here, and the
 //! model version is stored on every edge (spec 16.4, 28.5).
 //!
-//! Semantic function-match thresholds and strong/weak coverage cutoffs are
-//! part of this configuration. The design doc must quote the same values
-//! (see `tests::design_doc_matches_model_config`).
+//! # Single source of truth
+//!
+//! All numeric policy for byte similarity, semantic matching, and packed
+//! triage is centralized in [`MODEL_V1`]. Downstream modules re-export
+//! individual fields for convenience (e.g. `semantic::features::MATCH_TAU`)
+//! but **must not** hard-code different numbers.
+//!
+//! The design doc `docs/semantic-similarity-design.md` is tested against
+//! this config (`tests::design_doc_matches_model_config`). If you change
+//! a threshold, update the doc in the same commit or CI fails.
+//!
+//! # Versioning discipline
+//!
+//! Existing edges under `similarity-model:v1` / `semantic:v1` were
+//! produced with these exact values. Changing thresholds **requires**:
+//!
+//! 1. A new `MODEL_VERSION` string (e.g. `similarity-model:v2`).
+//! 2. Re-analysis (or dual-write) under the new version.
+//! 3. Optional supersession of old edges via
+//!    [`crate::similarity::invalidation`].
+//!
+//! In-place mutation of historical edges is forbidden.
+//!
+//! # Strong vs weak edges
+//!
+//! Spec 28.5: fuzzy hash and weak semantic edges are **searchable leads**
+//! only. Only exact, normalized-equivalent, and strong semantic edges
+//! merge variant groups ([`merges_groups`]).
 
+/// Persisted model identity on every `similarity_edge.model_version`.
 pub const MODEL_VERSION: &str = "similarity-model:v1";
 
+/// Authoritative knobs for one model version.
+///
+/// Fields are `Copy` so call sites can pass `&MODEL_V1` without cloning.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelConfig {
-    /// Minimum ssdeep score (0-100) for a `byte_similar` lead edge.
+    /// Minimum ssdeep score (0–100) for a `byte_similar` lead edge.
     pub byte_similar_min_score: i32,
     /// Byte-similar candidates must be within this size ratio of the
-    /// reference artifact.
+    /// reference artifact (max(size_a, size_b) / min(…)).
     pub size_ratio_max: f64,
     /// Maximum entropy distance for a byte_similar edge (evidence gate).
     pub entropy_delta_max: f64,
     /// Jaccard match threshold τ for a significant function pair.
+    ///
+    /// Pairs with score ≥ τ become candidates for one-to-one greedy
+    /// assignment in `semantic::edges::coverage`.
     pub semantic_match_tau: f64,
     /// Minimum bidirectional coverage for a weak semantic edge.
+    /// Coverage = matched_pairs / |functions| after suppression.
     pub semantic_weak_coverage: f64,
     /// Minimum bidirectional coverage for a strong semantic edge.
     pub semantic_strong_coverage: f64,
     /// Minimum one-to-one matched function pairs for a strong edge.
+    ///
+    /// High coverage with only 1–2 pairs is treated as weak to avoid
+    /// group merges from a single shared CRT-like leftover.
     pub semantic_strong_min_pairs: usize,
-    /// High-entropy code-section gate for packed/virtualized triage.
+    /// High-entropy code-section gate for packed/virtualized triage
+    /// (bits per byte, Shannon).
     pub packed_entropy_limit: f64,
     /// Minimum instruction count for a significant function.
     pub significance_min_insns: usize,
 }
 
-/// Authoritative model v1 configuration. Existing edges under
-/// `similarity-model:v1` / `semantic:v1` were produced with these values;
-/// changing them requires a model-version bump and re-analysis.
+/// Authoritative model v1 configuration.
+///
+/// Hand-set for mnemonic-family Jaccard; **uncalibrated** (issue #16).
+/// Do not tweak without a version bump.
 pub const MODEL_V1: ModelConfig = ModelConfig {
     byte_similar_min_score: 40,
     size_ratio_max: 4.0,
@@ -46,7 +84,10 @@ pub const MODEL_V1: ModelConfig = ModelConfig {
     significance_min_insns: 5,
 };
 
-/// Edge types (spec 16.4). Weak edges never merge variant groups.
+/// Edge type string constants (spec 16.4).
+///
+/// Weak edges (`BYTE_SIMILAR`, `SHARED_PROVENANCE`, `SEMANTIC_WEAK`) never
+/// merge variant groups.
 pub mod edge_type {
     pub const EXACT_COPY: &str = "exact_copy";
     pub const NORMALIZED_EQUIVALENT: &str = "normalized_equivalent";
@@ -56,7 +97,9 @@ pub mod edge_type {
     pub const SEMANTIC_WEAK: &str = "semantic_variant_weak";
 }
 
-/// Strong edges form variant groups; weak edges stay searchable leads.
+/// Whether this edge type should union the two artifacts' variant groups.
+///
+/// Spec 28.5: fuzzy hash alone never creates automatic family membership.
 pub fn merges_groups(edge_type: &str) -> bool {
     matches!(
         edge_type,
@@ -64,7 +107,12 @@ pub fn merges_groups(edge_type: &str) -> bool {
     )
 }
 
-/// Classify a coverage result into a semantic edge type, or `None`.
+/// Classify bidirectional coverage into a semantic edge type, or `None`.
+///
+/// Strong requires both directions ≥ `semantic_strong_coverage` **and**
+/// at least `semantic_strong_min_pairs` matched pairs. Weak requires both
+/// directions ≥ `semantic_weak_coverage` (pair floor not applied). Below
+/// weak thresholds, no edge is emitted.
 pub fn classify_semantic_edge(
     cfg: &ModelConfig,
     a_to_b: f64,
@@ -83,7 +131,10 @@ pub fn classify_semantic_edge(
     }
 }
 
-/// Stable digest of the model configuration for analysis receipts.
+/// Stable 16-byte hex digest of the model configuration for receipts.
+///
+/// Any field change changes the digest, so analysis receipts prove which
+/// threshold set produced an edge without storing the full struct.
 pub fn model_config_digest(cfg: &ModelConfig) -> String {
     use sha2::{Digest, Sha256};
     let payload = format!(

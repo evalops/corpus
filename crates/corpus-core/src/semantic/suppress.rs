@@ -1,15 +1,58 @@
 //! Ubiquitous library / runtime function suppression before scoring.
 //!
-//! v1 uses a bundled baseline of name patterns and token-shape heuristics.
-//! Suppressed functions remain in raw evidence but are excluded from
-//! coverage denominators and matching when suppression is enabled.
+//! # Why suppression exists
+//!
+//! Semantic coverage is `matched_pairs / significant_functions`. CRT
+//! helpers (`memcpy`, security cookies, C++ `operator new`, …) appear in
+//! almost every PE/ELF and would inflate both the denominator and the
+//! numerator when two unrelated binaries share the same toolchain.
+//!
+//! Suppression removes those functions from the *scoring* set while
+//! keeping decisions in raw evidence so analysts can audit what was
+//! dropped.
+//!
+//! # v1 policy (bundled baseline only)
+//!
+//! 1. **Name patterns** — case-insensitive substring match against a
+//!    fixed list of runtime / standard-library names.
+//! 2. **Tiny generic shape** — unnamed (or uninteresting) functions with
+//!    `< 12` instructions and `≤ 4` distinct token hashes.
+//!
+//! There is **no cross-tenant prevalence** and **no tenant-specific
+//! lists** in v1. That keeps isolation simple and decisions deterministic.
+//!
+//! # Pipeline position
+//!
+//! ```text
+//! extract_and_store → FunctionRow[]
+//!        │
+//!        ▼
+//! suppress::partition  → (kept, decisions[])
+//!        │
+//!        ▼
+//! coverage / edge emission uses `kept` only
+//! ```
+//!
+//! Significant-function filtering ([`crate::semantic::features::is_significant`])
+//! already drops pure thunks; suppression is a second pass for ubiquitous
+//! but otherwise "significant-looking" helpers.
+//!
+//! # Versioning
+//!
+//! [`SUPPRESSOR_VERSION`] is written into edge evidence and a
+//! `similarity_feature` row (`family=semantic`, `name=suppression`) so
+//! historical edges can be interpreted under the policy that produced them.
 
 use crate::semantic::edges::FunctionRow;
 use serde::Serialize;
 
+/// Persisted identity of this suppressor implementation.
 pub const SUPPRESSOR_VERSION: &str = "suppress:v1";
 
 /// Names (case-insensitive substrings) treated as ubiquitous runtime.
+///
+/// Order is not significant. Patterns intentionally match decorated and
+/// undecorated names (`__libc_start_main`, `std::vector`, …).
 const NAME_PATTERNS: &[&str] = &[
     "crt",
     "__libc",
@@ -41,15 +84,22 @@ const NAME_PATTERNS: &[&str] = &[
     "boost::",
 ];
 
+/// Per-function suppression outcome retained for evidence / audit.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct SuppressionDecision {
+    /// File offset of the function this decision applies to.
     pub offset: u64,
+    /// True when the function is excluded from coverage scoring.
     pub suppressed: bool,
+    /// Machine-readable reason (`name_pattern:memcpy`, `tiny_generic_shape`),
+    /// or `None` when kept.
     pub reason: Option<String>,
 }
 
-/// Decide suppression for one function. Never tenant-scoped in v1
-/// (bundled baseline only — no cross-tenant prevalence).
+/// Decide suppression for one function.
+///
+/// Never tenant-scoped in v1 (bundled baseline only — no cross-tenant
+/// prevalence). Name patterns take precedence over shape heuristics.
 pub fn decide(f: &FunctionRow) -> SuppressionDecision {
     if let Some(name) = &f.name {
         let lower = name.to_lowercase();
@@ -79,7 +129,10 @@ pub fn decide(f: &FunctionRow) -> SuppressionDecision {
     }
 }
 
-/// Partition into (kept for scoring, suppressed with decisions).
+/// Partition into (kept for scoring, *all* decisions including kept ones).
+///
+/// `decisions.len() == functions.len()` always. Callers that only need the
+/// suppressed subset should filter on `decision.suppressed`.
 pub fn partition(functions: &[FunctionRow]) -> (Vec<FunctionRow>, Vec<SuppressionDecision>) {
     let mut kept = Vec::new();
     let mut decisions = Vec::new();

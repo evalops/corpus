@@ -1,9 +1,41 @@
 //! Re-analysis invalidation and edge replacement semantics.
 //!
-//! When an analyzer/model version is superseded, existing features and
-//! edges keep their identity under the old version. New analysis writes
-//! rows under the new version. Optional supersession marks old edges as
-//! non-current without deleting them (auditability).
+//! # Model identity vs supersession
+//!
+//! Edges are keyed by
+//! `(tenant, src, dst, edge_type, model_version)`. When thresholds or
+//! extractors change, the correct response is a **new model/extractor
+//! version**, not an in-place rewrite of historical edges.
+//!
+//! That preserves:
+//!
+//! - Auditability (“what did we believe under v1?”)
+//! - Safe dual-running during migration
+//! - Idempotent re-analysis under the *same* version (`ON CONFLICT DO NOTHING`)
+//!
+//! # Supersession (optional soft invalidation)
+//!
+//! [`supersede_edges`] annotates existing edges under an old model version
+//! with:
+//!
+//! ```json
+//! { "superseded": true, "superseded_by": "<new>", "superseded_at": "<rfc3339>" }
+//! ```
+//!
+//! Rows are **not** deleted. Analyst UIs and neighborhood queries can
+//! filter via [`edge_is_current`]. Dry-run mode returns the count without
+//! writing.
+//!
+//! # Scope
+//!
+//! Supersession can target an entire tenant or a single artifact (any edge
+//! where the artifact is `src` or `dst`). Features and function rows are
+//! versioned separately and are not modified here.
+//!
+//! # Non-goals
+//!
+//! - Automatic background migration jobs (callers schedule supersession).
+//! - Physical purge (use lifecycle cleanup for deleted artifacts).
 
 use crate::error::Result;
 use chrono::Utc;
@@ -11,19 +43,25 @@ use serde::Serialize;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+/// Outcome of a supersession pass (dry-run or applied).
 #[derive(Debug, Clone, Serialize)]
 pub struct InvalidationReport {
     pub tenant_id: Uuid,
+    /// `None` when the whole tenant was in scope.
     pub artifact_id: Option<Uuid>,
     pub old_model_version: String,
     pub new_model_version: String,
+    /// Number of edges matching the filter that were (or would be) annotated.
     pub edges_superseded: u64,
     pub dry_run: bool,
 }
 
 /// Mark edges under `old_model_version` as superseded for a tenant
-/// (optionally one artifact). Does not delete rows; inserts a
-/// `superseded_by` annotation into evidence for auditability.
+/// (optionally one artifact).
+///
+/// Does not delete rows; merges a `superseded*` annotation into the
+/// existing `evidence` jsonb via `evidence || $annotation`. Already-
+/// superseded edges are skipped so the operation is idempotent.
 pub async fn supersede_edges(
     pool: &PgPool,
     tenant: Uuid,
@@ -32,25 +70,19 @@ pub async fn supersede_edges(
     new_model_version: &str,
     dry_run: bool,
 ) -> Result<InvalidationReport> {
-    let count_sql = if artifact.is_some() {
-        "SELECT COUNT(*) FROM similarity_edge
-         WHERE tenant_id = $1 AND model_version = $2
-           AND (src_artifact = $3 OR dst_artifact = $3)
-           AND COALESCE((evidence->>'superseded')::boolean, false) = false"
-    } else {
-        "SELECT COUNT(*) FROM similarity_edge
-         WHERE tenant_id = $1 AND model_version = $2
-           AND COALESCE((evidence->>'superseded')::boolean, false) = false
-           AND ($3::uuid IS NULL OR true)"
-    };
-
+    // Count first so dry-run and apply report the same filter semantics.
     let n: i64 = if let Some(a) = artifact {
-        sqlx::query_scalar(count_sql)
-            .bind(tenant)
-            .bind(old_model_version)
-            .bind(a)
-            .fetch_one(pool)
-            .await?
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM similarity_edge
+             WHERE tenant_id = $1 AND model_version = $2
+               AND (src_artifact = $3 OR dst_artifact = $3)
+               AND COALESCE((evidence->>'superseded')::boolean, false) = false",
+        )
+        .bind(tenant)
+        .bind(old_model_version)
+        .bind(a)
+        .fetch_one(pool)
+        .await?
     } else {
         sqlx::query_scalar(
             "SELECT COUNT(*) FROM similarity_edge
@@ -119,6 +151,9 @@ pub async fn supersede_edges(
 }
 
 /// Whether an edge evidence blob is still current (not superseded).
+///
+/// Missing or non-boolean `superseded` is treated as current — the
+/// default for all edges written before supersession existed.
 pub fn edge_is_current(evidence: &serde_json::Value) -> bool {
     !evidence
         .get("superseded")
