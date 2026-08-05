@@ -65,7 +65,10 @@ pub struct MerlinSegmentRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerlinSegmentResponse {
     pub schema_version: i32,
+    pub receipt_version: i32,
     pub segment_id: Uuid,
+    pub segment_sha256: String,
+    pub status: String,
     pub accepted_events: usize,
     pub duplicate_events: usize,
 }

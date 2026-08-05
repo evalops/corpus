@@ -45,6 +45,10 @@ telemetry separately from verified artifact occurrences, so a process event
 can be joined to later byte capture without treating a path or event as a
 file hash. Use a dedicated `CORPUS_MERLIN_INGEST_TOKEN`; do not share the
 Corpus admin token or Merlin's sensor sync key.
+Each batch returns a versioned delivery receipt containing the canonical segment
+digest, accepted/duplicate counts, and a stable segment ID. Merlin validates
+that receipt before marking its local delivery durable; malformed or stale
+receipts are retried rather than silently acknowledged.
 
 ## What it does
 
