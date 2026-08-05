@@ -51,6 +51,9 @@ async fn merlin_segment_ingest_is_idempotent_and_rejects_digest_conflicts() {
     assert_eq!(first.accepted_events, 2);
     assert_eq!(first.duplicate_events, 0);
 
+    assert_eq!(first.receipt_version, 1);
+    assert_eq!(first.segment_sha256, "a".repeat(64));
+    assert_eq!(first.status, "accepted");
     let replay = merlin::ingest_segment(&pool, tenant_id, &req)
         .await
         .unwrap();
@@ -58,6 +61,8 @@ async fn merlin_segment_ingest_is_idempotent_and_rejects_digest_conflicts() {
     assert_eq!(replay.accepted_events, 0);
     assert_eq!(replay.duplicate_events, 2);
 
+    assert_eq!(replay.receipt_version, 1);
+    assert_eq!(replay.status, "duplicate");
     let observations = merlin::list_observations(&pool, tenant_id, Some("merlin-test-host"), 100)
         .await
         .unwrap();

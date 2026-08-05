@@ -148,7 +148,15 @@ pub async fn ingest_segment(
 
     Ok(MerlinSegmentResponse {
         schema_version: MERLIN_SCHEMA_VERSION,
+        receipt_version: 1,
         segment_id,
+        segment_sha256,
+        status: if accepted_events == 0 {
+            "duplicate"
+        } else {
+            "accepted"
+        }
+        .into(),
         accepted_events,
         duplicate_events: req.events.len() - accepted_events,
     })
@@ -348,4 +356,21 @@ mod tests {
         object.events = vec![serde_json::json!("not an event")];
         assert!(validate_request(&object).is_err());
     }
+}
+
+#[test]
+fn merlin_receipt_serializes_delivery_contract() {
+    let receipt = MerlinSegmentResponse {
+        schema_version: MERLIN_SCHEMA_VERSION,
+        receipt_version: 1,
+        segment_id: Uuid::nil(),
+        segment_sha256: "a".repeat(64),
+        status: "accepted".into(),
+        accepted_events: 2,
+        duplicate_events: 1,
+    };
+    let value = serde_json::to_value(receipt).unwrap();
+    assert_eq!(value["receipt_version"], 1);
+    assert_eq!(value["segment_sha256"], "a".repeat(64));
+    assert_eq!(value["status"], "accepted");
 }

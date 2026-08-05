@@ -105,7 +105,28 @@
         "summary": "Ingest replay-safe raw Merlin telemetry",
         "security": [{ "merlinBearer": [] }, { "adminBearer": [] }],
         "parameters": [{ "$ref": "#/components/parameters/Tenant" }],
-        "responses": { "200": { "description": "Accepted and duplicate event counts" } }
+        "responses": {
+          "200": {
+            "description": "Delivery receipt with accepted and duplicate event counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["schema_version", "receipt_version", "segment_id", "segment_sha256", "status", "accepted_events", "duplicate_events"],
+                  "properties": {
+                    "schema_version": { "type": "integer", "example": 1 },
+                    "receipt_version": { "type": "integer", "example": 1 },
+                    "segment_id": { "type": "string", "format": "uuid" },
+                    "segment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+                    "status": { "type": "string", "enum": ["accepted", "duplicate"] },
+                    "accepted_events": { "type": "integer", "minimum": 0 },
+                    "duplicate_events": { "type": "integer", "minimum": 0 }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/integrations/merlin/observations": {
